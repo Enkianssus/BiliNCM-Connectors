@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-30T23:38:52.690Z",
+  "generatedAt": "2026-07-30T23:56:31.877Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -48,6 +48,21 @@
       "signature": "koAafdxNiMwj0ZyOnlZYJ9wYPhnt2wDW3o4TQg+S2bkR1CijLM5rhE+GFv13N12pkm5VD9+DqsSEVo1glM78AA==",
       "publishedAt": "2026-07-30T22:22:14.629Z",
       "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/1.1.0/bilincm-connector-qqmusic-1.1.0-win-x86.zip"
+    },
+    "folia": {
+      "id": "folia",
+      "name": "Folia",
+      "channel": "stable",
+      "version": "1.0.0",
+      "protocolVersion": 1,
+      "minimumCoreVersion": "1.1.0",
+      "playerVersionPolicy": "Stage API",
+      "asset": "bilincm-connector-folia-1.0.0-win-x86.zip",
+      "size": 34659580,
+      "sha256": "1fc4a6b60b199488371a6aa9992ff5b46dd3d3f83640718ecb838c4909c601eb",
+      "signature": "mWYtb+OQDJ5kLIXmt4Gzkl5X8KphCvzavfZI6Bv0fTZXqTneJ7XX8DIsowGrOvM146SgKGy2qaXPB9S5/GT7Bw==",
+      "publishedAt": "2026-07-30T23:56:31.877Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/folia/1.0.0/bilincm-connector-folia-1.0.0-win-x86.zip"
     }
   }
 }
