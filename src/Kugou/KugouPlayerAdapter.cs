@@ -1,7 +1,11 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using KugouControlPoc;
 
 namespace UnifiedPlayerControlPoc;
@@ -84,10 +88,35 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        var trimmedQuery = query.Trim();
+        var keywordTask = SearchByKeywordAsync(
+            trimmedQuery,
+            cancellationToken);
+        if (!trimmedQuery.All(char.IsAsciiDigit))
+        {
+            return await keywordTask.ConfigureAwait(false);
+        }
+
+        var codeResults = await TryResolveKugouCodeAsync(
+            trimmedQuery,
+            cancellationToken).ConfigureAwait(false);
+        if (codeResults.Count > 0)
+        {
+            _ = ObserveBackgroundTaskAsync(keywordTask);
+            return codeResults;
+        }
+
+        return await keywordTask.ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<PlayerTrack>> SearchByKeywordAsync(
+        string query,
+        CancellationToken cancellationToken)
+    {
         var queryString =
             "/api/v3/search/song"
             + "?format=json"
-            + $"&keyword={Uri.EscapeDataString(query.Trim())}"
+            + $"&keyword={Uri.EscapeDataString(query)}"
             + "&page=1&pagesize=20&showtype=1";
         using var response = await GetSearchResponseAsync(
             queryString,
@@ -130,6 +159,261 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }
 
         return results;
+    }
+
+    private async Task<IReadOnlyList<PlayerTrack>> TryResolveKugouCodeAsync(
+        string code,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await SendMixedSearchAsync(
+                code,
+                cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return [];
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(
+                cancellationToken).ConfigureAwait(false);
+            using var document = await JsonDocument.ParseAsync(
+                stream,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (!document.RootElement.TryGetProperty("data", out var data)
+                || !data.TryGetProperty("lists", out var groups)
+                || groups.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            foreach (var group in groups.EnumerateArray())
+            {
+                if (!ReadJsonText(group, "type").Equals(
+                        "song",
+                        StringComparison.OrdinalIgnoreCase)
+                    || ReadJsonLong(group, "isshareresult") != 1
+                    || !group.TryGetProperty("lists", out var songs)
+                    || songs.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                var results = new List<PlayerTrack>();
+                foreach (var song in songs.EnumerateArray())
+                {
+                    var track = CreateMixedSearchTrack(song);
+                    if (track is null)
+                    {
+                        continue;
+                    }
+
+                    results.Add(track);
+                    RememberTrack(
+                        track,
+                        ReadJsonTextAny(song, "FileHash", "Hash", "hash"));
+                }
+
+                return results;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // The value may be a numeric song title, or the unsigned public
+            // share endpoint may be temporarily unavailable. Keyword search
+            // was already started in parallel and remains the safe fallback.
+        }
+
+        return [];
+    }
+
+    private async Task<HttpResponseMessage> SendMixedSearchAsync(
+        string code,
+        CancellationToken cancellationToken)
+    {
+        const string dfid = "-";
+        const string signatureSalt =
+            "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA";
+        var now = DateTimeOffset.UtcNow;
+        var milliseconds = now.ToUnixTimeMilliseconds();
+        var clientTime = now.ToUnixTimeSeconds().ToString(
+            CultureInfo.InvariantCulture);
+        var mid = BigInteger.Parse(
+            $"0{Md5Hex(dfid)}",
+            NumberStyles.HexNumber,
+            CultureInfo.InvariantCulture).ToString(
+                CultureInfo.InvariantCulture);
+        var uuid = Md5Hex($"{dfid}{mid}");
+        var parameters = new Dictionary<string, string>(
+            StringComparer.Ordinal)
+        {
+            ["ab_tag"] = "0",
+            ["ability"] = "511",
+            ["albumhide"] = "0",
+            ["apiver"] = "22",
+            ["area_code"] = "1",
+            ["clientver"] = "20125",
+            ["cursor"] = "0",
+            ["is_gpay"] = "0",
+            ["iscorrection"] = "1",
+            ["keyword"] = code,
+            ["nocollect"] = "0",
+            ["osversion"] = "16.5",
+            ["platform"] = "IOSFilter",
+            ["recver"] = "2",
+            ["req_ai"] = "1",
+            ["requestid"] =
+                $"{Md5Hex($"bdaa53d04e7475feb9024164a47032f9{milliseconds}")}_0",
+            ["search_ability"] = "3",
+            ["sec_aggre"] = "1",
+            ["sec_aggre_bitmap"] = "0",
+            ["style_type"] = "3",
+            ["tag"] = "em",
+            ["appid"] = "3116",
+            ["dfid"] = dfid,
+            ["mid"] = mid,
+            ["uuid"] = uuid,
+            ["userid"] = "0",
+            ["clienttime"] = clientTime
+        };
+        var signatureInput = string.Concat(
+            parameters
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => $"{pair.Key}={pair.Value}"));
+        parameters["signature"] = Md5Hex(
+            $"{signatureSalt}{signatureInput}{signatureSalt}");
+        var queryString = string.Join(
+            "&",
+            parameters.Select(pair =>
+                $"{Uri.EscapeDataString(pair.Key)}="
+                + Uri.EscapeDataString(pair.Value)));
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"https://gateway.kugou.com/v3/search/mixed?{queryString}");
+        request.Headers.TryAddWithoutValidation(
+            "User-Agent",
+            "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi");
+        request.Headers.TryAddWithoutValidation(
+            "x-router",
+            "complexsearch.kugou.com");
+        request.Headers.TryAddWithoutValidation(
+            "kg-clienttimems",
+            milliseconds.ToString(CultureInfo.InvariantCulture));
+        request.Headers.TryAddWithoutValidation("dfid", dfid);
+        request.Headers.TryAddWithoutValidation("mid", mid);
+        request.Headers.TryAddWithoutValidation("clienttime", clientTime);
+        request.Headers.TryAddWithoutValidation("kg-rc", "1");
+        request.Headers.TryAddWithoutValidation("kg-thash", "5d816a0");
+        request.Headers.TryAddWithoutValidation("kg-rec", "1");
+        request.Headers.TryAddWithoutValidation(
+            "kg-rf",
+            "B9EDA08A64250DEFFBCADDEE00F8F25F");
+        return await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static PlayerTrack? CreateMixedSearchTrack(JsonElement song)
+    {
+        var hash = ReadJsonTextAny(song, "FileHash", "Hash", "hash")
+            .ToUpperInvariant();
+        var audioId = ReadJsonLongAny(
+            song,
+            "Audioid",
+            "audio_id",
+            "Scid");
+        var title = StripSearchMarkup(
+            ReadJsonTextAny(song, "OriSongName", "SongName", "songname"));
+        var artist = StripSearchMarkup(
+            ReadJsonTextAny(song, "SingerName", "singername"));
+        if (string.IsNullOrWhiteSpace(hash)
+            || string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        var durationSeconds = ReadJsonLongAny(
+            song,
+            "Duration",
+            "duration");
+        var canonical = new Dictionary<string, object?>
+        {
+            ["filename"] = StripSearchMarkup(
+                ReadJsonTextAny(song, "FileName", "filename")),
+            ["hash"] = hash,
+            ["filesize"] = ReadJsonLongAny(
+                song,
+                "FileSize",
+                "filesize").ToString(CultureInfo.InvariantCulture),
+            ["timelength"] = (durationSeconds * 1000).ToString(
+                CultureInfo.InvariantCulture),
+            ["duration"] = durationSeconds,
+            ["bitrate"] = ReadJsonLongAny(
+                song,
+                "Bitrate",
+                "bitrate").ToString(CultureInfo.InvariantCulture),
+            ["mvhash"] = ReadJsonTextAny(song, "MvHash", "mvhash"),
+            ["isvip"] = ReadJsonLongAny(song, "IsVip", "isvip"),
+            ["privilege"] = ReadJsonLongAny(
+                song,
+                "Privilege",
+                "privilege"),
+            ["album_id"] = ReadJsonTextAny(
+                song,
+                "AlbumID",
+                "album_id"),
+            ["mixsongid"] = ReadJsonTextAny(
+                song,
+                "MixSongID",
+                "mixsongid") is { Length: > 0 } mixSongId
+                ? mixSongId
+                : "0",
+            ["specialid"] = "0",
+            ["songname"] = title,
+            ["singername"] = artist,
+            ["album_name"] = StripSearchMarkup(
+                ReadJsonTextAny(song, "AlbumName", "album_name")),
+            ["audio_id"] = audioId
+        };
+        var track = new PlayerTrack(
+            audioId > 0 ? audioId.ToString(CultureInfo.InvariantCulture) : hash,
+            title,
+            artist,
+            StripSearchMarkup(
+                ReadJsonTextAny(song, "AlbumName", "album_name")),
+            JsonSerializer.Serialize(canonical),
+            GetCoverUrl(song));
+        return track;
+    }
+
+    private static async Task ObserveBackgroundTaskAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The preferred exact-ID result has already completed.
+        }
+    }
+
+    private static string Md5Hex(string value)
+    {
+        return Convert.ToHexString(
+                MD5.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
+    }
+
+    private static string StripSearchMarkup(string value)
+    {
+        return System.Net.WebUtility.HtmlDecode(
+            Regex.Replace(value, "<[^>]+>", string.Empty)).Trim();
     }
 
     private async Task<HttpResponseMessage> GetSearchResponseAsync(
@@ -599,19 +883,25 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
     private static string GetCoverUrl(JsonElement song)
     {
         var coverUrl = string.Empty;
-        if (song.TryGetProperty("trans_param", out var transParam)
+        if (TryGetJsonProperty(song, "trans_param", out var transParam)
             && transParam.ValueKind == JsonValueKind.Object)
         {
-            coverUrl = ReadJsonText(transParam, "union_cover");
+            coverUrl = ReadJsonTextAny(
+                transParam,
+                "union_cover",
+                "UnionCover");
         }
 
         if (string.IsNullOrWhiteSpace(coverUrl))
         {
-            coverUrl = ReadJsonText(song, "album_cover");
+            coverUrl = ReadJsonTextAny(
+                song,
+                "album_cover",
+                "AlbumImage");
         }
         if (string.IsNullOrWhiteSpace(coverUrl))
         {
-            coverUrl = ReadJsonText(song, "img");
+            coverUrl = ReadJsonTextAny(song, "img", "Image");
         }
         if (string.IsNullOrWhiteSpace(coverUrl))
         {
@@ -731,6 +1021,92 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             JsonValueKind.False => "0",
             _ => defaultValue
         };
+    }
+
+    private static string ReadJsonTextAny(
+        JsonElement element,
+        params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (!TryGetJsonProperty(element, name, out var value))
+            {
+                continue;
+            }
+
+            var text = value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString() ?? string.Empty,
+                JsonValueKind.Number => value.GetRawText(),
+                JsonValueKind.True => "1",
+                JsonValueKind.False => "0",
+                _ => string.Empty
+            };
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return text;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static long ReadJsonLongAny(
+        JsonElement element,
+        params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (!TryGetJsonProperty(element, name, out var value))
+            {
+                continue;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number
+                && value.TryGetInt64(out var number))
+            {
+                return number;
+            }
+            if (value.ValueKind == JsonValueKind.String
+                && long.TryParse(
+                    value.GetString(),
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out number))
+            {
+                return number;
+            }
+        }
+
+        return 0;
+    }
+
+    private static bool TryGetJsonProperty(
+        JsonElement element,
+        string name,
+        out JsonElement value)
+    {
+        if (element.TryGetProperty(name, out value))
+        {
+            return true;
+        }
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.Name.Equals(
+                        name,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+        }
+
+        value = default;
+        return false;
     }
 
     private static long ReadJsonLong(JsonElement element, string name)
