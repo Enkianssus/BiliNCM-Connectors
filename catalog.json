@@ -1,8 +1,23 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-31T00:00:00Z",
+  "generatedAt": "2026-07-30T16:40:35.629Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
-  "connectors": {}
+  "connectors": {
+    "netease": {
+      "id": "netease",
+      "name": "网易云音乐",
+      "channel": "stable",
+      "version": "1.0.0",
+      "protocolVersion": 1,
+      "minimumCoreVersion": "1.1.0",
+      "playerVersionPolicy": "3.1.*",
+      "asset": "bilincm-connector-netease-1.0.0-win-x86.zip",
+      "size": 34661628,
+      "sha256": "ca286fc30603f51751143d21a278d25202967f45dbca79d847b7c0d01ceca7fc",
+      "signature": "KDyOGltTYqKjjvs1elVenyTirmG/oFacEFOLy2QaR3uVGgyX517ubAy3qNb/aQKSBmE/i02rWUDJDG4eWkJCAQ==",
+      "publishedAt": "2026-07-30T16:40:35.629Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/1.0.0/bilincm-connector-netease-1.0.0-win-x86.zip"
+    }
+  }
 }
-
