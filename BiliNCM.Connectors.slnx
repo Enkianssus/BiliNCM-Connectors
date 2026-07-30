@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/Netease/BiliNCM.Connector.Netease.csproj" />
+  <Project Path="src/Kugou/BiliNCM.Connector.Kugou.csproj" />
+  <Project Path="src/QQMusic/BiliNCM.Connector.QQMusic.csproj" />
+</Solution>
+

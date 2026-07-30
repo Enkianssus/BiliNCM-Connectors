@@ -1,0 +1,6 @@
+name = "appdownload"
+main = "worker.js"
+compatibility_date = "2026-05-12"
+workers_dev = true
+preview_urls = false
+

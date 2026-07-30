@@ -1,0 +1,116 @@
+name: Release connector
+
+on:
+  push:
+    tags:
+      - 'netease-v*'
+      - 'kugou-v*'
+      - 'qqmusic-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Resolve connector metadata
+        id: metadata
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^(netease|kugou|qqmusic)-v(.+)$') {
+            throw "Unsupported release tag: $tag"
+          }
+
+          $id = $Matches[1]
+          $version = $Matches[2]
+          $projectName = switch ($id) {
+            'netease' { 'Netease' }
+            'kugou' { 'Kugou' }
+            'qqmusic' { 'QQMusic' }
+          }
+          $asset = "bilincm-connector-$id-$version-win-x86.zip"
+
+          "id=$id" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "project_name=$projectName" >> $env:GITHUB_OUTPUT
+          "asset=$asset" >> $env:GITHUB_OUTPUT
+
+      - name: Publish connector
+        shell: pwsh
+        run: |
+          $id = '${{ steps.metadata.outputs.id }}'
+          $projectName = '${{ steps.metadata.outputs.project_name }}'
+          $version = '${{ steps.metadata.outputs.version }}'
+          $output = "artifacts/$id/publish"
+
+          dotnet publish `
+            "src/$projectName/BiliNCM.Connector.$projectName.csproj" `
+            -c Release `
+            -r win-x86 `
+            --self-contained true `
+            -p:Version="$version" `
+            -o "$output"
+
+          Compress-Archive `
+            -Path "$output/*" `
+            -DestinationPath "artifacts/${{ steps.metadata.outputs.asset }}" `
+            -CompressionLevel Optimal
+
+      - name: Sign release asset
+        id: signing
+        shell: pwsh
+        env:
+          CONNECTOR_SIGNING_PRIVATE_KEY: ${{ secrets.CONNECTOR_SIGNING_PRIVATE_KEY }}
+        run: |
+          $asset = "artifacts/${{ steps.metadata.outputs.asset }}"
+          $result = node scripts/sign-release.mjs "$asset" | ConvertFrom-Json
+          "sha256=$($result.sha256)" >> $env:GITHUB_OUTPUT
+          "signature=$($result.signature)" >> $env:GITHUB_OUTPUT
+          "size=$($result.size)" >> $env:GITHUB_OUTPUT
+          $result.signature | Set-Content -NoNewline "$asset.sig"
+          $result.sha256 | Set-Content -NoNewline "$asset.sha256"
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $asset = "artifacts/${{ steps.metadata.outputs.asset }}"
+          gh release create "${{ github.ref_name }}" `
+            "$asset" `
+            "$asset.sig" `
+            "$asset.sha256" `
+            --title "${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}" `
+            --notes "BiliNCM ${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}."
+
+      - name: Update stable catalog
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+          node scripts/update-catalog.mjs `
+            "${{ steps.metadata.outputs.id }}" `
+            "${{ steps.metadata.outputs.version }}" `
+            "${{ steps.metadata.outputs.asset }}" `
+            "${{ steps.signing.outputs.sha256 }}" `
+            "${{ steps.signing.outputs.signature }}" `
+            "${{ steps.signing.outputs.size }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalog.json
+          git commit -m "Update ${{ steps.metadata.outputs.id }} connector catalog"
+          git push origin main
+

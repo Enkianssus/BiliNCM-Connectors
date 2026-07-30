@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>BiliNCM.Connector.Netease</AssemblyName>
+    <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\ConnectorRuntime.cs" Link="Shared\ConnectorRuntime.cs" />
+    <Compile Include="..\Shared\PlayerContracts.cs" Link="Shared\PlayerContracts.cs" />
+    <Compile Include="..\Shared\GuardedNextMonitor.cs" Link="Shared\GuardedNextMonitor.cs" />
+  </ItemGroup>
+</Project>
+
