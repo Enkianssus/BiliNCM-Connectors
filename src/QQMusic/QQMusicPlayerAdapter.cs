@@ -17,6 +17,12 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
     private readonly object _softwareNextSync = new();
     private readonly Dictionary<(long SongId, int SongType), PlayerTrack>
         _knownTracks = [];
+    private readonly Dictionary<string, PlayerTrack> _resolvedCurrentTracks =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _artworkLookups =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<Task> _artworkTasks = [];
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private CancellationTokenSource? _softwareNextCancellation;
     private Task? _softwareNextTask;
     private volatile string _softwareNextStatus = string.Empty;
@@ -76,6 +82,11 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                         state.Artist ?? string.Empty,
                         string.Empty)
                     : null);
+            if (current is not null
+                && string.IsNullOrWhiteSpace(current.CoverUrl))
+            {
+                ScheduleArtworkLookup(current);
+            }
             return new PlayerSnapshot(
                 true,
                 DisplayName,
@@ -97,20 +108,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         var songs = await _catalogClient.SearchAsync(
             query,
             cancellationToken: cancellationToken).ConfigureAwait(false);
-        var tracks = songs.Select(song =>
-        {
-            var nativeData = JsonSerializer.Serialize(new QqTrackPayload(
-                song.SongId,
-                song.SongType,
-                song.SongMid,
-                song.IsPlayable));
-            return new PlayerTrack(
-                song.SongId.ToString(),
-                song.Title,
-                song.Artist,
-                song.Album,
-                nativeData);
-        }).ToArray();
+        var tracks = songs.Select(CreateTrack).ToArray();
         lock (_trackSync)
         {
             foreach (var track in tracks)
@@ -141,6 +139,10 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                     before);
             }
 
+            if (track is not null)
+            {
+                RememberTrack(track);
+            }
             if (command == PlayerCommand.InsertNext)
             {
                 return await ExecuteInsertNextAsync(
@@ -274,12 +276,31 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         }
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         CancelSoftwareNext(string.Empty);
+        _lifetimeCancellation.Cancel();
+        Task[] artworkTasks;
+        lock (_trackSync)
+        {
+            artworkTasks = [.. _artworkTasks];
+        }
+        try
+        {
+            await Task.WhenAll(artworkTasks).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Connector shutdown cancels optional artwork resolution.
+        }
+        catch
+        {
+            // Artwork is best-effort and must not block connector shutdown.
+        }
+
+        _lifetimeCancellation.Dispose();
         _catalogClient.Dispose();
         _operationGate.Dispose();
-        return ValueTask.CompletedTask;
     }
 
     private async Task<PlayerOperationResult> ExecuteInsertNextAsync(
@@ -780,6 +801,16 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
 
         lock (_trackSync)
         {
+            var lookupKey = BuildTrackLookupKey(
+                title,
+                artist ?? string.Empty);
+            if (_resolvedCurrentTracks.TryGetValue(
+                    lookupKey,
+                    out var resolved))
+            {
+                return resolved;
+            }
+
             var matches = _knownTracks.Values
                 .Where(track =>
                     Normalize(track.Title) == Normalize(title)
@@ -788,6 +819,123 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                 .ToArray();
             return matches.Length == 1 ? matches[0] : null;
         }
+    }
+
+    private void RememberTrack(PlayerTrack track)
+    {
+        lock (_trackSync)
+        {
+            _resolvedCurrentTracks[
+                BuildTrackLookupKey(track.Title, track.Artist)] = track;
+            try
+            {
+                var payload = ParsePayload(track);
+                _knownTracks[(payload.SongId, payload.SongType)] = track;
+            }
+            catch
+            {
+                // Tracks observed from the QQ window may not contain catalog ids.
+            }
+        }
+    }
+
+    private void ScheduleArtworkLookup(PlayerTrack current)
+    {
+        var lookupKey = BuildTrackLookupKey(current.Title, current.Artist);
+        lock (_trackSync)
+        {
+            if (!_artworkLookups.Add(lookupKey))
+            {
+                return;
+            }
+
+            _artworkTasks.Add(ResolveArtworkAsync(
+                lookupKey,
+                current,
+                _lifetimeCancellation.Token));
+        }
+    }
+
+    private async Task ResolveArtworkAsync(
+        string lookupKey,
+        PlayerTrack current,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var query = string.IsNullOrWhiteSpace(current.Artist)
+                ? current.Title
+                : $"{current.Title} {current.Artist}";
+            var songs = await _catalogClient.SearchAsync(
+                query,
+                count: 12,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            var normalizedTitle = Normalize(current.Title);
+            var normalizedArtist = Normalize(current.Artist);
+            var match = songs
+                .Where(song => Normalize(song.Title) == normalizedTitle)
+                .OrderByDescending(song =>
+                    string.IsNullOrWhiteSpace(normalizedArtist)
+                    || Normalize(song.Artist).Contains(
+                        normalizedArtist,
+                        StringComparison.Ordinal)
+                    || normalizedArtist.Contains(
+                        Normalize(song.Artist),
+                        StringComparison.Ordinal))
+                .ThenByDescending(song =>
+                    !string.IsNullOrWhiteSpace(song.AlbumMid))
+                .FirstOrDefault();
+            if (match is null)
+            {
+                return;
+            }
+
+            var track = CreateTrack(match) with { Id = current.Id };
+            lock (_trackSync)
+            {
+                _knownTracks[(match.SongId, match.SongType)] = track;
+                _resolvedCurrentTracks[lookupKey] = track;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Connector shutdown does not affect playback state.
+        }
+        catch
+        {
+            // Missing artwork is non-fatal; title monitoring still works.
+        }
+    }
+
+    private static PlayerTrack CreateTrack(QQMusicCatalogSong song)
+    {
+        var nativeData = JsonSerializer.Serialize(new QqTrackPayload(
+            song.SongId,
+            song.SongType,
+            song.SongMid,
+            song.IsPlayable));
+        return new PlayerTrack(
+            song.SongId.ToString(),
+            song.Title,
+            song.Artist,
+            song.Album,
+            nativeData,
+            BuildAlbumCoverUrl(song.AlbumMid));
+    }
+
+    private static string BuildAlbumCoverUrl(string? albumMid)
+    {
+        return string.IsNullOrWhiteSpace(albumMid)
+            ? string.Empty
+            : "https://y.gtimg.cn/music/photo_new/"
+              + $"T002R300x300M000{albumMid.Trim()}.jpg";
+    }
+
+    private static string BuildTrackLookupKey(
+        string title,
+        string artist)
+    {
+        return $"{Normalize(title)}|{Normalize(artist)}";
     }
 
     private static QqTrackPayload ParsePayload(PlayerTrack track)

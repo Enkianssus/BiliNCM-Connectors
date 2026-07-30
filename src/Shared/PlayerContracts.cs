@@ -37,7 +37,8 @@ internal sealed record PlayerTrack(
     string Title,
     string Artist,
     string Album,
-    string NativeData = "")
+    string NativeData = "",
+    string CoverUrl = "")
 {
     public string DisplayName =>
         string.IsNullOrWhiteSpace(Artist) ? Title : $"{Title} - {Artist}";

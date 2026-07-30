@@ -14,6 +14,13 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
     };
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly GuardedNextMonitor _nextGuard = new();
+    private readonly object _trackSync = new();
+    private readonly Dictionary<string, PlayerTrack> _knownTracks =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _artworkLookups =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<Task> _artworkTasks = [];
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private volatile bool _httpSearchFallbackUsed;
 
     public string Key => "kugou";
@@ -53,6 +60,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         var state =
             await KugouNativeController.ReadPlaybackStateWithIdentityAsync(
                 cancellationToken).ConfigureAwait(false);
+        var current = ResolveCurrentTrack(state);
         return new PlayerSnapshot(
             true,
             DisplayName,
@@ -67,7 +75,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                   + (string.IsNullOrWhiteSpace(_nextGuard.Status)
                       ? string.Empty
                       : $"；{_nextGuard.Status}"),
-            ConvertTrack(state),
+            current,
             DateTimeOffset.Now);
     }
 
@@ -110,12 +118,15 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                 continue;
             }
 
-            results.Add(new PlayerTrack(
+            var track = new PlayerTrack(
                 audioId > 0 ? audioId.ToString() : hash,
                 title,
                 artist,
                 ReadJsonText(song, "album_name"),
-                song.GetRawText()));
+                song.GetRawText(),
+                GetCoverUrl(song));
+            results.Add(track);
+            RememberTrack(track, hash);
         }
 
         return results;
@@ -229,6 +240,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                     before);
             }
 
+            RememberTrack(track);
             var endpoint = FindValidatedIpcEndpoint();
             if (endpoint is null)
             {
@@ -307,21 +319,40 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        _lifetimeCancellation.Cancel();
+        Task[] artworkTasks;
+        lock (_trackSync)
+        {
+            artworkTasks = [.. _artworkTasks];
+        }
+        try
+        {
+            await Task.WhenAll(artworkTasks).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Connector shutdown cancels any optional background artwork lookup.
+        }
+        catch
+        {
+            // Artwork is best-effort and must not block connector shutdown.
+        }
+
         _nextGuard.Dispose();
+        _lifetimeCancellation.Dispose();
         _httpClient.Dispose();
         _operationGate.Dispose();
-        return ValueTask.CompletedTask;
     }
 
-    private static Task<PlayerTrack?> ReadCurrentForGuardAsync(
+    private Task<PlayerTrack?> ReadCurrentForGuardAsync(
         CancellationToken cancellationToken)
     {
         return Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return ConvertTrack(
+            return ResolveCurrentTrack(
                 KugouNativeController.ReadPlaybackState());
         }, cancellationToken);
     }
@@ -429,7 +460,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }
     }
 
-    private static PlayerTrack? ConvertTrack(KugouPlaybackState state)
+    private PlayerTrack? ResolveCurrentTrack(KugouPlaybackState state)
     {
         if (string.IsNullOrWhiteSpace(state.RawTitle))
         {
@@ -439,12 +470,105 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         var id = state.AudioId > 0
             ? state.AudioId.ToString()
             : state.Hash;
-        return new PlayerTrack(
+        var fallback = new PlayerTrack(
             id,
             state.Title,
             state.Artist,
             string.Empty,
             state.Hash);
+        var known = FindKnownTrack(id, state.Hash);
+        if (known is not null)
+        {
+            return known;
+        }
+
+        ScheduleArtworkLookup(fallback);
+        return fallback;
+    }
+
+    private PlayerTrack? FindKnownTrack(params string[] identities)
+    {
+        lock (_trackSync)
+        {
+            foreach (var identity in identities)
+            {
+                if (!string.IsNullOrWhiteSpace(identity)
+                    && _knownTracks.TryGetValue(identity, out var track))
+                {
+                    return track;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private void RememberTrack(PlayerTrack track, params string[] identities)
+    {
+        lock (_trackSync)
+        {
+            if (!string.IsNullOrWhiteSpace(track.Id))
+            {
+                _knownTracks[track.Id] = track;
+            }
+            foreach (var identity in identities)
+            {
+                if (!string.IsNullOrWhiteSpace(identity))
+                {
+                    _knownTracks[identity] = track;
+                }
+            }
+        }
+    }
+
+    private void ScheduleArtworkLookup(PlayerTrack current)
+    {
+        var identity = !string.IsNullOrWhiteSpace(current.Id)
+            ? current.Id
+            : $"{Normalize(current.Title)}|{Normalize(current.Artist)}";
+        lock (_trackSync)
+        {
+            if (!_artworkLookups.Add(identity))
+            {
+                return;
+            }
+
+            _artworkTasks.Add(ResolveArtworkAsync(
+                identity,
+                current,
+                _lifetimeCancellation.Token));
+        }
+    }
+
+    private async Task ResolveArtworkAsync(
+        string identity,
+        PlayerTrack current,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var query = string.IsNullOrWhiteSpace(current.Artist)
+                ? current.Title
+                : $"{current.Title} {current.Artist}";
+            var results = await SearchAsync(query, cancellationToken)
+                .ConfigureAwait(false);
+            var match = results.FirstOrDefault(candidate =>
+                TrackMatches(candidate, current)
+                && !string.IsNullOrWhiteSpace(candidate.CoverUrl));
+            if (match is not null)
+            {
+                var enriched = match with { Id = current.Id };
+                RememberTrack(enriched, identity);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Connector shutdown or a cancelled request does not affect playback.
+        }
+        catch
+        {
+            // Missing artwork is non-fatal; playback state remains available.
+        }
     }
 
     private static bool TrackMatches(PlayerTrack? actual, PlayerTrack expected)
@@ -470,6 +594,43 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         return value.Normalize(NormalizationForm.FormKC)
             .Replace(" ", string.Empty, StringComparison.Ordinal)
             .ToUpperInvariant();
+    }
+
+    private static string GetCoverUrl(JsonElement song)
+    {
+        var coverUrl = string.Empty;
+        if (song.TryGetProperty("trans_param", out var transParam)
+            && transParam.ValueKind == JsonValueKind.Object)
+        {
+            coverUrl = ReadJsonText(transParam, "union_cover");
+        }
+
+        if (string.IsNullOrWhiteSpace(coverUrl))
+        {
+            coverUrl = ReadJsonText(song, "album_cover");
+        }
+        if (string.IsNullOrWhiteSpace(coverUrl))
+        {
+            coverUrl = ReadJsonText(song, "img");
+        }
+        if (string.IsNullOrWhiteSpace(coverUrl))
+        {
+            return string.Empty;
+        }
+
+        coverUrl = coverUrl.Replace(
+            "{size}",
+            "400",
+            StringComparison.OrdinalIgnoreCase);
+        if (coverUrl.StartsWith("//", StringComparison.Ordinal))
+        {
+            return $"https:{coverUrl}";
+        }
+        return coverUrl.StartsWith(
+            "http://",
+            StringComparison.OrdinalIgnoreCase)
+            ? $"https://{coverUrl[7..]}"
+            : coverUrl;
     }
 
     private static string BuildOnlinePayload(
