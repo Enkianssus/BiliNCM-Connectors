@@ -6,6 +6,7 @@ on:
       - 'netease-v*'
       - 'kugou-v*'
       - 'qqmusic-v*'
+      - 'folia-v*'
 
 permissions:
   contents: write
@@ -32,7 +33,7 @@ jobs:
         shell: pwsh
         run: |
           $tag = '${{ github.ref_name }}'
-          if ($tag -notmatch '^(netease|kugou|qqmusic)-v(.+)$') {
+          if ($tag -notmatch '^(netease|kugou|qqmusic|folia)-v(.+)$') {
             throw "Unsupported release tag: $tag"
           }
 
@@ -42,6 +43,7 @@ jobs:
             'netease' { 'Netease' }
             'kugou' { 'Kugou' }
             'qqmusic' { 'QQMusic' }
+            'folia' { 'Folia' }
           }
           $asset = "bilincm-connector-$id-$version-win-x86.zip"
 

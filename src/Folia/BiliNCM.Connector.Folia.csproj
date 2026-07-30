@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>BiliNCM.Connector.Folia</AssemblyName>
+    <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\ConnectorRuntime.cs" Link="Shared\ConnectorRuntime.cs" />
+    <Compile Include="..\Shared\PlayerContracts.cs" Link="Shared\PlayerContracts.cs" />
+  </ItemGroup>
+</Project>

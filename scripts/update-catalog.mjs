@@ -28,6 +28,10 @@ const supported = {
   qqmusic: {
     name: 'QQ音乐',
     playerVersionPolicy: '22.*'
+  },
+  folia: {
+    name: 'Folia',
+    playerVersionPolicy: 'Stage API'
   }
 };
 
@@ -62,4 +66,3 @@ fs.writeFileSync(
   `${JSON.stringify(catalog, null, 2)}\n`,
   'utf8'
 );
-

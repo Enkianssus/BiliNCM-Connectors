@@ -8,7 +8,7 @@ const CORE_PROJECTS = {
 };
 
 const CONNECTOR_REPO = 'Enkianssus/BiliNCM-Connectors';
-const CONNECTOR_IDS = new Set(['netease', 'kugou', 'qqmusic']);
+const CONNECTOR_IDS = new Set(['netease', 'kugou', 'qqmusic', 'folia']);
 const GITHUB_HOSTS = new Set([
   'github.com',
   'api.github.com',
@@ -38,7 +38,7 @@ export default {
     }
 
     const connectorDownload = url.pathname.match(
-      /^\/connectors\/v1\/download\/(netease|kugou|qqmusic)\/([0-9]+\.[0-9]+\.[0-9]+)\/([^/]+)$/
+      /^\/connectors\/v1\/download\/(netease|kugou|qqmusic|folia)\/([0-9]+\.[0-9]+\.[0-9]+)\/([^/]+)$/
     );
     if (connectorDownload) {
       const [, connectorId, version, assetName] = connectorDownload;
@@ -340,4 +340,3 @@ function escapeHtml(value) {
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
 }
-
