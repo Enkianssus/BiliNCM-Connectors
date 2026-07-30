@@ -10,16 +10,20 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: connector-catalog
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: windows-latest
 
     steps:
       - name: Checkout release source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
 
@@ -113,4 +117,3 @@ jobs:
           git add catalog.json
           git commit -m "Update ${{ steps.metadata.outputs.id }} connector catalog"
           git push origin main
-
