@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-30T16:42:30.009Z",
+  "generatedAt": "2026-07-30T16:44:22.011Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -33,6 +33,21 @@
       "signature": "TZmy/BduAhHsMtyZBwwtDIpsdaljwGLhbSBqez9HvKQelnv1JXCc53s2ZVrd1WZRI9o58T13jR8E6ozi42QYAA==",
       "publishedAt": "2026-07-30T16:42:30.009Z",
       "downloadUrl": "https://app.enkianss.us/connectors/v1/download/kugou/1.0.0/bilincm-connector-kugou-1.0.0-win-x86.zip"
+    },
+    "qqmusic": {
+      "id": "qqmusic",
+      "name": "QQ音乐",
+      "channel": "stable",
+      "version": "1.0.0",
+      "protocolVersion": 1,
+      "minimumCoreVersion": "1.1.0",
+      "playerVersionPolicy": "22.*",
+      "asset": "bilincm-connector-qqmusic-1.0.0-win-x86.zip",
+      "size": 34686658,
+      "sha256": "c49ef12af82939cfc32d3fa4434e68a5dbccb9c11744312fefc7003eaa497872",
+      "signature": "KuFuDGPLRg0lpyFGbAB1nsO5VQKYLpvi2ytgNp9BWsje0QxSmUi69NdtjUmSLyclTjkNiQu3uxsrJw6byv17Aw==",
+      "publishedAt": "2026-07-30T16:44:22.011Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/1.0.0/bilincm-connector-qqmusic-1.0.0-win-x86.zip"
     }
   }
 }
