@@ -562,6 +562,10 @@ async function proxyGitHub(request, target, options = {}) {
     }
   }
 
+  if (options.redirectReleaseAsset === true) {
+    return Response.redirect(targetUrl.toString(), 302);
+  }
+
   let response;
   try {
     response = await fetch(targetUrl.toString(), {
@@ -681,7 +685,10 @@ async function proxyCoreAsset(request, project, assetName, options = {}) {
     request,
     `https://github.com/${project.repo}/releases/download/`
       + `${encodeURIComponent(tag)}/${encodeURIComponent(assetName)}`,
-    options
+    {
+      ...options,
+      redirectReleaseAsset: /\.nupkg$/i.test(assetName)
+    }
   );
 }
 
