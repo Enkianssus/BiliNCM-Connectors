@@ -21,10 +21,10 @@ jobs:
 
     steps:
       - name: Checkout release source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v6
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
 
@@ -45,12 +45,14 @@ jobs:
             'qqmusic' { 'QQMusic' }
             'folia' { 'Folia' }
           }
-          $asset = "bilincm-connector-$id-$version-win-x86.zip"
+          $runtime = if ($id -eq 'netease') { 'win-x64' } else { 'win-x86' }
+          $asset = "bilincm-connector-$id-$version-$runtime.zip"
 
           "id=$id" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
           "project_name=$projectName" >> $env:GITHUB_OUTPUT
           "asset=$asset" >> $env:GITHUB_OUTPUT
+          "runtime=$runtime" >> $env:GITHUB_OUTPUT
 
       - name: Publish connector
         shell: pwsh
@@ -63,10 +65,14 @@ jobs:
           dotnet publish `
             "src/$projectName/BiliNCM.Connector.$projectName.csproj" `
             -c Release `
-            -r win-x86 `
+            -r "${{ steps.metadata.outputs.runtime }}" `
             --self-contained true `
             -p:Version="$version" `
             -o "$output"
+
+          node scripts/smoke-connector.mjs `
+            "$output/BiliNCM.Connector.$projectName.exe" `
+            "$id"
 
           Compress-Archive `
             -Path "$output/*" `
@@ -98,7 +104,7 @@ jobs:
             "$asset.sig" `
             "$asset.sha256" `
             --title "${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}" `
-            --notes "BiliNCM ${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}."
+            --notes "Awoo MusicBot ${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}."
 
       - name: Update stable catalog
         shell: pwsh
@@ -113,7 +119,8 @@ jobs:
             "${{ steps.metadata.outputs.asset }}" `
             "${{ steps.signing.outputs.sha256 }}" `
             "${{ steps.signing.outputs.signature }}" `
-            "${{ steps.signing.outputs.size }}"
+            "${{ steps.signing.outputs.size }}" `
+            "${{ steps.metadata.outputs.runtime }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add catalog.json

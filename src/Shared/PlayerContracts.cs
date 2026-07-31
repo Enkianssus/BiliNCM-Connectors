@@ -8,7 +8,8 @@ internal enum PlayerCommand
     Toggle,
     Next,
     PlaySelected,
-    InsertNext
+    InsertNext,
+    ArmNextGuard
 }
 
 internal enum OperationOutcome

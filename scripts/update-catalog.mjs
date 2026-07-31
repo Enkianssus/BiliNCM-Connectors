@@ -7,12 +7,13 @@ const [
   assetName,
   sha256,
   signature,
-  sizeText
+  sizeText,
+  runtime
 ] = process.argv.slice(2);
 
-if (!connectorId || !version || !assetName || !sha256 || !signature) {
+if (!connectorId || !version || !assetName || !sha256 || !signature || !runtime) {
   throw new Error(
-    'Usage: update-catalog.mjs <id> <version> <asset> <sha256> <signature> <size>'
+    'Usage: update-catalog.mjs <id> <version> <asset> <sha256> <signature> <size> <runtime>'
   );
 }
 
@@ -52,6 +53,7 @@ catalog.connectors[connectorId] = {
   protocolVersion: 1,
   minimumCoreVersion: '1.1.0',
   playerVersionPolicy: supported[connectorId].playerVersionPolicy,
+  runtime,
   asset: assetName,
   size: Number(sizeText),
   sha256,

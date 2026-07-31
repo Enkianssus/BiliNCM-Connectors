@@ -73,7 +73,8 @@ internal static class ConnectorRuntime
                             {
                                 protocolVersion = ProtocolVersion,
                                 connectorId,
-                                connectorVersion = GetVersion()
+                                connectorVersion = GetVersion(),
+                                capabilities = adapter.Capabilities
                             },
                             null));
                         continue;

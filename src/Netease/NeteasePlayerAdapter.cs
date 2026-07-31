@@ -14,10 +14,15 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
     };
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly GuardedNextMonitor _nextGuard = new();
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly object _trackSync = new();
+    private readonly object _bridgeSync = new();
     private readonly Dictionary<string, PlayerTrack> _knownTracks = [];
     private DateTime _playingListWriteTimeUtc;
-    private IReadOnlyList<PlayerTrack> _playingList = [];
+    private IReadOnlyList<NeteasePlaylistEntry> _playingList = [];
+    private Task<NeteaseBridgeInstallResult>? _bridgeInstallTask;
+    private int? _bridgeInstallProcessId;
+    private DateTime _bridgeRetryAfterUtc = DateTime.MinValue;
 
     private static readonly string PlayingListPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -53,11 +58,33 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         Toggle: false,
         Next: true,
         InsertNext: true,
-        InsertNextLevel: "原生插入 + 错误下一首暂停接管守卫");
+        InsertNextLevel: "进程内 CEF 插入并验证 + 错歌暂停接管守卫");
 
-    public Task<PlayerSnapshot> ProbeAsync(CancellationToken cancellationToken)
+    public async Task<PlayerSnapshot> ProbeAsync(
+        CancellationToken cancellationToken)
     {
-        return Task.Run(ReadSnapshot, cancellationToken);
+        var snapshot = await Task.Run(
+            ReadSnapshot,
+            cancellationToken).ConfigureAwait(false);
+        if (!snapshot.Connected || snapshot.ProcessId is null)
+        {
+            return snapshot;
+        }
+
+        var bridge = await Task.Run(
+            NeteaseInjectedBridgeClient.Probe,
+            cancellationToken).ConfigureAwait(false);
+        if (!bridge.Connected)
+        {
+            StartBridgeInstallIfNeeded(snapshot.ProcessId.Value);
+        }
+
+        return snapshot with
+        {
+            Status = snapshot.Status + (bridge.Connected
+                ? "；进程内 CEF 桥已连接"
+                : "；正在准备进程内 CEF 桥")
+        };
     }
 
     public async Task<IReadOnlyList<PlayerTrack>> SearchAsync(
@@ -95,12 +122,9 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
             .Select(ParseSearchTrack)
             .Where(track => !string.IsNullOrWhiteSpace(track.Id))
             .ToArray();
-        lock (_trackSync)
+        foreach (var track in tracks)
         {
-            foreach (var track in tracks)
-            {
-                _knownTracks[track.Id] = track;
-            }
+            RegisterKnownTrack(track);
         }
 
         return tracks;
@@ -123,6 +147,49 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
                     before);
             }
 
+            if (command is PlayerCommand.Pause or PlayerCommand.Resume)
+            {
+                var readiness = await EnsureBridgeReadyAsync(
+                    before.ProcessId,
+                    cancellationToken).ConfigureAwait(false);
+                if (!readiness.Ready)
+                {
+                    return new PlayerOperationResult(
+                        OperationOutcome.Rejected,
+                        readiness.Message,
+                        before);
+                }
+
+                var mediaResult = await Task.Run(
+                    () => command == PlayerCommand.Pause
+                        ? NeteaseInjectedBridgeClient.Pause()
+                        : NeteaseInjectedBridgeClient.Resume(),
+                    cancellationToken).ConfigureAwait(false);
+                return new PlayerOperationResult(
+                    mediaResult.Success
+                        ? OperationOutcome.Accepted
+                        : OperationOutcome.Rejected,
+                    mediaResult.Message,
+                    before);
+            }
+
+            if (command == PlayerCommand.ArmNextGuard && track is not null)
+            {
+                var armed = ArmNextGuard(
+                    before,
+                    track,
+                    cancellationToken,
+                    out var guardMessage);
+                return new PlayerOperationResult(
+                    armed
+                        ? OperationOutcome.Accepted
+                        : OperationOutcome.Rejected,
+                    armed
+                        ? $"未重复插入网易云队列；{guardMessage}"
+                        : "当前歌曲不可识别，无法只更新下一首兜底守卫。",
+                    before);
+            }
+
             NeteaseIpcSendResult sent;
             switch (command)
             {
@@ -138,42 +205,46 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
                             NeteaseNativeCommand.Next),
                         cancellationToken).ConfigureAwait(false);
                     break;
-                case PlayerCommand.Pause:
-                    sent = await Task.Run(
-                        () => NeteaseNativeIpc.SendNativeCommand(
-                            NeteaseNativeCommand.PlayPause),
-                        cancellationToken).ConfigureAwait(false);
-                    break;
-                case PlayerCommand.Resume:
-                    sent = await Task.Run(
-                        () => NeteaseNativeIpc.SendNativeCommand(
-                            NeteaseNativeCommand.PlayPause),
-                        cancellationToken).ConfigureAwait(false);
-                    break;
                 case PlayerCommand.PlaySelected when track is not null:
+                {
                     RegisterKnownTrack(track);
                     _nextGuard.Cancel(
                         "下一首守卫已因立即播放其他歌曲而取消");
-                    sent = await Task.Run(
-                        () => NeteaseNativeIpc.SendWebCommand(new
-                        {
-                            cmd = "play",
-                            type = "song",
-                            id = track.Id
-                        }),
+                    var readiness = await EnsureBridgeReadyAsync(
+                        before.ProcessId,
                         cancellationToken).ConfigureAwait(false);
+                    if (!readiness.Ready)
+                    {
+                        return new PlayerOperationResult(
+                            OperationOutcome.Rejected,
+                            readiness.Message,
+                            before);
+                    }
+                    var bridgeResult = await Task.Run(
+                        () => NeteaseInjectedBridgeClient.PlaySong(track.Id),
+                        cancellationToken).ConfigureAwait(false);
+                    sent = ToIpcResult(bridgeResult);
                     break;
+                }
                 case PlayerCommand.InsertNext when track is not null:
+                {
                     RegisterKnownTrack(track);
-                    sent = await Task.Run(
-                        () => NeteaseNativeIpc.SendWebCommand(new
-                        {
-                            cmd = "playingList",
-                            type = "addToNext",
-                            value = track.Id
-                        }),
+                    var readiness = await EnsureBridgeReadyAsync(
+                        before.ProcessId,
                         cancellationToken).ConfigureAwait(false);
+                    if (!readiness.Ready)
+                    {
+                        return new PlayerOperationResult(
+                            OperationOutcome.Rejected,
+                            readiness.Message,
+                            before);
+                    }
+                    var bridgeResult = await Task.Run(
+                        () => NeteaseInjectedBridgeClient.AddNext(track.Id),
+                        cancellationToken).ConfigureAwait(false);
+                    sent = ToIpcResult(bridgeResult);
                     break;
+                }
                 default:
                     return new PlayerOperationResult(
                         OperationOutcome.Unsupported,
@@ -203,16 +274,38 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
                     await ProbeAsync(cancellationToken).ConfigureAwait(false));
             }
 
-            if (command is PlayerCommand.Pause or PlayerCommand.Resume)
-            {
-                return new PlayerOperationResult(
-                    OperationOutcome.Accepted,
-                    $"{sent.Message} 当前 PoC 没有可靠播放状态字段，未把投递误报为状态验证。",
-                    await ProbeAsync(cancellationToken).ConfigureAwait(false));
-            }
-
             if (command == PlayerCommand.InsertNext)
             {
+                var verificationDeadline =
+                    DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3.5);
+                var verifiedSnapshot = before;
+                while (DateTimeOffset.UtcNow < verificationDeadline)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await Task.Delay(75, cancellationToken).ConfigureAwait(false);
+                    verifiedSnapshot = await ProbeAsync(
+                        cancellationToken).ConfigureAwait(false);
+                    if (track is not null
+                        && TrackMatches(
+                            ResolveSequentialNext(verifiedSnapshot.Current),
+                            track))
+                    {
+                        var verifiedGuard = ArmNextGuard(
+                            before,
+                            track,
+                            cancellationToken,
+                            out var verifiedGuardMessage);
+                        return new PlayerOperationResult(
+                            OperationOutcome.Verified,
+                            $"{sent.Message} 已确认网易云内部下一首为 "
+                            + $"{track.DisplayName}。"
+                            + (verifiedGuard
+                                ? $" {verifiedGuardMessage}"
+                                : string.Empty),
+                            verifiedSnapshot);
+                    }
+                }
+
                 var insertGuardMessage = string.Empty;
                 var armed = track is not null
                     && ArmNextGuard(
@@ -221,14 +314,12 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
                         cancellationToken,
                         out insertGuardMessage);
                 return new PlayerOperationResult(
-                    armed
-                        ? OperationOutcome.Accepted
-                        : OperationOutcome.Indeterminate,
-                    $"{sent.Message} 网易云已接收原生插入。"
+                    armed ? OperationOutcome.Accepted : OperationOutcome.Indeterminate,
+                    $"{sent.Message} 3.5 秒内未能从播放列表确认插入。"
                     + (armed
-                        ? $" {insertGuardMessage}"
+                        ? $" 已保留错歌兜底；{insertGuardMessage}"
                         : " 下一曲守卫未能启动。"),
-                    await ProbeAsync(cancellationToken).ConfigureAwait(false));
+                    verifiedSnapshot);
             }
 
             var deadline = DateTimeOffset.UtcNow
@@ -273,7 +364,9 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
 
     public ValueTask DisposeAsync()
     {
+        _lifetimeCancellation.Cancel();
         _nextGuard.Dispose();
+        _lifetimeCancellation.Dispose();
         _httpClient.Dispose();
         _operationGate.Dispose();
         return ValueTask.CompletedTask;
@@ -332,7 +425,7 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
             target,
             ReadCurrentForGuardAsync,
             TakeOverGuardedNextAsync,
-            cancellationToken,
+            _lifetimeCancellation.Token,
             out message);
     }
 
@@ -359,24 +452,26 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         PlayerTrack target,
         CancellationToken cancellationToken)
     {
-        var pause = await Task.Run(
-            () => NeteaseNativeIpc.SendWebCommand(
-                new { cmd = "pause" }),
+        var readiness = await EnsureBridgeReadyAsync(
+            NeteaseNativeIpc.FindEndpoint()?.ProcessId,
             cancellationToken).ConfigureAwait(false);
-        if (!pause.Delivered)
+        if (!readiness.Ready)
+        {
+            return $"下一首接管失败：{readiness.Message}";
+        }
+
+        var pause = await Task.Run(
+            NeteaseInjectedBridgeClient.Pause,
+            cancellationToken).ConfigureAwait(false);
+        if (!pause.Success)
         {
             return $"下一首接管失败：暂停错误歌曲失败；{pause.Message}";
         }
 
         var play = await Task.Run(
-            () => NeteaseNativeIpc.SendWebCommand(new
-            {
-                cmd = "play",
-                type = "song",
-                id = target.Id
-            }),
+            () => NeteaseInjectedBridgeClient.PlaySong(target.Id),
             cancellationToken).ConfigureAwait(false);
-        return play.Delivered
+        return play.Success
             ? $"已暂停错误歌曲并切换目标：{target.DisplayName}"
             : $"已暂停错误歌曲，但目标播放失败：{play.Message}";
     }
@@ -386,6 +481,10 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         lock (_trackSync)
         {
             _knownTracks[track.Id] = track;
+            while (_knownTracks.Count > 1024)
+            {
+                _knownTracks.Remove(_knownTracks.Keys.First());
+            }
         }
     }
 
@@ -408,7 +507,7 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
                 }
             }
 
-            IReadOnlyList<PlayerTrack>? parsed = null;
+            IReadOnlyList<NeteasePlaylistEntry>? parsed = null;
             for (var attempt = 0; attempt < 3 && parsed is null; attempt++)
             {
                 try
@@ -459,7 +558,7 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         lock (_trackSync)
         {
             candidates = _knownTracks.Values
-                .Concat(_playingList)
+                .Concat(_playingList.Select(item => item.Track))
                 .GroupBy(track => track.Id, StringComparer.Ordinal)
                 .Select(group => group.First())
                 .ToList();
@@ -503,7 +602,7 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
             : new PlayerTrack(string.Empty, title.Trim(), string.Empty, string.Empty);
     }
 
-    private static IReadOnlyList<PlayerTrack> ParsePlayingList(
+    private static IReadOnlyList<NeteasePlaylistEntry> ParsePlayingList(
         JsonElement root)
     {
         if (!root.TryGetProperty("list", out var list)
@@ -512,7 +611,7 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
             return [];
         }
 
-        var tracks = new List<PlayerTrack>();
+        var tracks = new List<NeteasePlaylistEntry>();
         foreach (var item in list.EnumerateArray())
         {
             var track = item.TryGetProperty("track", out var nested)
@@ -527,11 +626,20 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
                 continue;
             }
 
-            tracks.Add(new PlayerTrack(
+            var playerTrack = new PlayerTrack(
                 id,
                 name,
                 ReadArtists(track),
-                ReadAlbum(track)));
+                ReadAlbum(track));
+            var displayOrder = item.TryGetProperty(
+                    "displayOrder",
+                    out var orderValue)
+                && orderValue.TryGetInt32(out var order)
+                    ? order
+                    : int.MaxValue;
+            tracks.Add(new NeteasePlaylistEntry(
+                playerTrack,
+                displayOrder));
         }
 
         return tracks;
@@ -646,6 +754,105 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         return NormalizeTitle(before.DisplayName)
             != NormalizeTitle(after.DisplayName);
     }
+
+    private PlayerTrack? ResolveSequentialNext(PlayerTrack? current)
+    {
+        if (current is null)
+        {
+            return null;
+        }
+
+        List<PlayerTrack> ordered;
+        lock (_trackSync)
+        {
+            ordered = _playingList
+                .OrderBy(item => item.DisplayOrder)
+                .Select(item => item.Track)
+                .ToList();
+        }
+        var index = ordered.FindIndex(item => TrackMatches(item, current));
+        return index < 0 || ordered.Count < 2
+            ? null
+            : ordered[(index + 1) % ordered.Count];
+    }
+
+    private void StartBridgeInstallIfNeeded(int processId)
+    {
+        lock (_bridgeSync)
+        {
+            if (_bridgeInstallTask is { IsCompleted: false })
+            {
+                return;
+            }
+            if (_bridgeInstallProcessId == processId
+                && DateTime.UtcNow < _bridgeRetryAfterUtc)
+            {
+                return;
+            }
+
+            _bridgeInstallProcessId = processId;
+            _bridgeRetryAfterUtc = DateTime.UtcNow.AddSeconds(20);
+            _bridgeInstallTask = Task.Run(NeteaseBridgeInstaller.Install);
+        }
+    }
+
+    private async Task<(bool Ready, string Message)> EnsureBridgeReadyAsync(
+        int? processId,
+        CancellationToken cancellationToken)
+    {
+        if (processId is null)
+        {
+            return (false, "没有发现正在运行的网易云音乐。");
+        }
+
+        var probe = await Task.Run(
+            NeteaseInjectedBridgeClient.Probe,
+            cancellationToken).ConfigureAwait(false);
+        if (probe.Connected)
+        {
+            return (true, probe.Message);
+        }
+
+        StartBridgeInstallIfNeeded(processId.Value);
+        Task<NeteaseBridgeInstallResult>? installTask;
+        lock (_bridgeSync)
+        {
+            installTask = _bridgeInstallTask;
+        }
+        if (installTask is not null)
+        {
+            var install = await installTask
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (!install.Success)
+            {
+                return (
+                    false,
+                    $"{install.Message} {install.Details}".Trim());
+            }
+        }
+
+        probe = await Task.Run(
+            NeteaseInjectedBridgeClient.Probe,
+            cancellationToken).ConfigureAwait(false);
+        return probe.Connected
+            ? (true, probe.Message)
+            : (false, probe.Message + " " + probe.Details);
+    }
+
+    private static NeteaseIpcSendResult ToIpcResult(
+        NeteaseBridgeCommandResult result)
+    {
+        return new NeteaseIpcSendResult(
+            result.Success,
+            result.Success ? 1u : 0u,
+            result.Message
+            + $"；前台未切换={result.ForegroundBefore == result.ForegroundAfter}");
+    }
+
+    private sealed record NeteasePlaylistEntry(
+        PlayerTrack Track,
+        int DisplayOrder);
 }
 
 internal sealed record NeteaseIpcEndpoint(int ProcessId, nint WindowHandle);
@@ -725,25 +932,112 @@ internal static class NeteaseNativeIpc
     private static readonly nint InvalidHandleValue = new(-1);
     private static readonly nint MessageOnlyWindow = new(-3);
     private static readonly object SendSync = new();
+    private static readonly object DiscoverySync = new();
     private static uint _lastTick;
+    private static NeteaseIpcEndpoint? _cachedEndpoint;
 
     public static NeteaseIpcEndpoint? FindEndpoint()
     {
-        foreach (var process in Process.GetProcessesByName("cloudmusic")
-                     .OrderByDescending(process => process.Id))
+        lock (DiscoverySync)
         {
-            using (process)
-            {
-                var handle = FindNativeCommandWindow(process.Id);
-                if (handle != nint.Zero)
+            var processIds = Process.GetProcessesByName("cloudmusic")
+                .Select(process =>
                 {
-                    return new NeteaseIpcEndpoint(process.Id, handle);
+                    using (process)
+                    {
+                        return process.Id;
+                    }
+                })
+                .ToHashSet();
+            if (processIds.Count == 0)
+            {
+                _cachedEndpoint = null;
+                return null;
+            }
+
+            if (_cachedEndpoint is not null
+                && processIds.Contains(_cachedEndpoint.ProcessId)
+                && IsWindow(_cachedEndpoint.WindowHandle))
+            {
+                GetWindowThreadProcessId(
+                    _cachedEndpoint.WindowHandle,
+                    out var owner);
+                if (owner == _cachedEndpoint.ProcessId
+                    && ReadWindowClass(_cachedEndpoint.WindowHandle).Equals(
+                        "OrpheusBrowserHost",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return _cachedEndpoint;
                 }
             }
-        }
 
-        return null;
+            var candidates = new List<NeteaseEndpointCandidate>();
+            _ = EnumWindows(
+                (window, unused) =>
+                {
+                    _ = unused;
+                    GetWindowThreadProcessId(window, out var processId);
+                    if (!processIds.Contains(processId)
+                        || !ReadWindowClass(window).Equals(
+                            "OrpheusBrowserHost",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+
+                    _ = GetWindowRect(window, out var rectangle);
+                    var width = Math.Max(
+                        0,
+                        rectangle.Right - rectangle.Left);
+                    var height = Math.Max(
+                        0,
+                        rectangle.Bottom - rectangle.Top);
+                    var title = ReadWindowTitle(window);
+                    var rank = string.IsNullOrWhiteSpace(title) ? 0 : 4;
+                    if (!string.IsNullOrWhiteSpace(title)
+                        && !title.Equals(
+                            "网易云音乐",
+                            StringComparison.OrdinalIgnoreCase)
+                        && !title.Equals(
+                            "NetEase Cloud Music",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        rank += 4;
+                    }
+                    if (width >= 400 && height >= 300)
+                    {
+                        rank += 2;
+                    }
+                    if (IsIconic(window))
+                    {
+                        rank += 1;
+                    }
+                    candidates.Add(new NeteaseEndpointCandidate(
+                        processId,
+                        window,
+                        rank,
+                        (long)width * height));
+                    return true;
+                },
+                nint.Zero);
+            var selected = candidates
+                .OrderByDescending(candidate => candidate.Rank)
+                .ThenByDescending(candidate => candidate.Area)
+                .FirstOrDefault();
+            _cachedEndpoint = selected is null
+                ? null
+                : new NeteaseIpcEndpoint(
+                    selected.ProcessId,
+                    selected.WindowHandle);
+            return _cachedEndpoint;
+        }
     }
+
+    private sealed record NeteaseEndpointCandidate(
+        int ProcessId,
+        nint WindowHandle,
+        int Rank,
+        long Area);
 
     public static string TryGetProcessVersion(int processId)
     {
@@ -973,13 +1267,6 @@ internal static class NeteaseNativeIpc
             },
             nint.Zero);
         return (bestHandle, bestTitle);
-    }
-
-    public static NeteaseIpcSendResult SendWebCommand(object payload)
-    {
-        var json = JsonSerializer.Serialize(payload);
-        var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
-        return Send(3, $"orpheus://{encoded}");
     }
 
     private static NeteaseIpcSendResult Send(int commandId, string data)
@@ -1576,6 +1863,10 @@ internal static class NeteaseNativeIpc
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsIconic(nint window);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(nint window);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

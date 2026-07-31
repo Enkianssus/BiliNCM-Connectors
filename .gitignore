@@ -1,8 +1,8 @@
 **/bin/
 **/obj/
+src/Netease/bridge/
 artifacts/
 .idea/
 .vs/
 *.user
 *.suo
-

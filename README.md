@@ -1,6 +1,6 @@
-# BiliNCM Connectors
+# Awoo MusicBot Connectors
 
-Independent native player connectors for BiliNCM.
+Independent native player connectors for Awoo MusicBot (formerly BiliNCM).
 
 The repository intentionally contains no BiliNCM UI, danmaku, account,
 permission, queue, HTTP API, or WebSocket server code. Each connector is built
@@ -32,7 +32,7 @@ include song, artist, album, and cover metadata.
 ## Build
 
 ```powershell
-dotnet publish .\src\Netease\BiliNCM.Connector.Netease.csproj -c Release -r win-x86 --self-contained true
+dotnet publish .\src\Netease\BiliNCM.Connector.Netease.csproj -c Release -r win-x64 --self-contained true
 dotnet publish .\src\Kugou\BiliNCM.Connector.Kugou.csproj -c Release -r win-x86 --self-contained true
 dotnet publish .\src\QQMusic\BiliNCM.Connector.QQMusic.csproj -c Release -r win-x86 --self-contained true
 dotnet publish .\src\Folia\BiliNCM.Connector.Folia.csproj -c Release -r win-x86 --self-contained true

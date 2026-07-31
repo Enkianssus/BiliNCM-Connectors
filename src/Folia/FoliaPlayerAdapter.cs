@@ -29,6 +29,7 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
     private readonly SemaphoreSlim _connectionGate = new(1, 1);
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly object _stateSync = new();
+    private readonly GuardedNextMonitor _nextGuard = new();
     private readonly ConcurrentDictionary<string, PlayerTrack> _knownTracks =
         new(StringComparer.Ordinal);
     private ClientWebSocket? _socket;
@@ -80,7 +81,13 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
         }
 
         await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
-        return ReadSnapshot();
+        var snapshot = ReadSnapshot();
+        return string.IsNullOrWhiteSpace(_nextGuard.Status)
+            ? snapshot
+            : snapshot with
+            {
+                Status = $"{snapshot.Status}；{_nextGuard.Status}"
+            };
     }
 
     public async Task<IReadOnlyList<PlayerTrack>> SearchAsync(
@@ -124,6 +131,36 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
         await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var before = await ProbeAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (command is PlayerCommand.ArmNextGuard)
+            {
+                if (track is null
+                    || !long.TryParse(track.Id, out var guardedSongId)
+                    || guardedSongId <= 0)
+                {
+                    return Result(
+                        OperationOutcome.Rejected,
+                        "Folia 需要有效的网易云歌曲 ID。");
+                }
+
+                Remember(track);
+                var armed = _nextGuard.Arm(
+                    before.Current,
+                    track,
+                    ReadCurrentForGuardAsync,
+                    TakeOverGuardedNextAsync,
+                    _lifetime.Token,
+                    out var guardMessage);
+                return Result(
+                    armed
+                        ? OperationOutcome.Accepted
+                        : OperationOutcome.Rejected,
+                    armed
+                        ? $"未重复插入 Folia 队列；{guardMessage}"
+                        : "当前歌曲不可识别，无法只更新下一首兜底守卫。");
+            }
+
             if (command is PlayerCommand.InsertNext
                 or PlayerCommand.PlaySelected)
             {
@@ -137,22 +174,46 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
                 }
 
                 Remember(track);
+                if (command == PlayerCommand.PlaySelected)
+                {
+                    _nextGuard.Cancel(
+                        "下一首守卫已因立即播放其他歌曲而取消");
+                }
                 using var insertResponse = await PostAsync(
                     "/stage/player/queue",
                     new { action = "insert-next", songId },
                     cancellationToken).ConfigureAwait(false);
+
+                if (command is PlayerCommand.InsertNext)
+                {
+                    var armed = _nextGuard.Arm(
+                        before.Current,
+                        track,
+                        ReadCurrentForGuardAsync,
+                        TakeOverGuardedNextAsync,
+                        _lifetime.Token,
+                        out var guardMessage);
+                    var inserted = insertResponse.IsSuccessStatusCode;
+                    return Result(
+                        inserted || armed
+                            ? OperationOutcome.Accepted
+                            : OperationOutcome.Rejected,
+                        inserted
+                            ? $"Folia 已接收原生下一首：{track.DisplayName}。"
+                              + (armed
+                                  ? $" {guardMessage}"
+                                  : " 当前歌曲不可识别，兜底守卫未启动。")
+                            : $"Folia 原生插入失败（HTTP {(int)insertResponse.StatusCode}）。"
+                              + (armed
+                                  ? $" 已回退到软件兜底；{guardMessage}"
+                                  : " 软件兜底也无法启动。"));
+                }
+
                 if (!insertResponse.IsSuccessStatusCode)
                 {
                     return Result(
                         OperationOutcome.Rejected,
                         $"Folia 拒绝插入下一首（HTTP {(int)insertResponse.StatusCode}）。");
-                }
-
-                if (command is PlayerCommand.InsertNext)
-                {
-                    return Result(
-                        OperationOutcome.Accepted,
-                        $"Folia 已接收下一首：{track.DisplayName}");
                 }
 
                 using var nextResponse = await PostAsync(
@@ -210,6 +271,7 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
     public async ValueTask DisposeAsync()
     {
         _lifetime.Cancel();
+        _nextGuard.Dispose();
         var socket = _socket;
         _socket = null;
         if (socket is not null)
@@ -551,7 +613,7 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
 
         var title = GetString(track, "title")
             ?? GetString(track, "name")
-            ?? $"歌曲 {id}";
+            ?? string.Empty;
         var artist = ParseArtists(track);
         var album = ParseAlbum(track);
         var cover = ParseCover(track);
@@ -572,6 +634,10 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
                 string.IsNullOrWhiteSpace(album) ? known.Album : album,
                 known.NativeData,
                 string.IsNullOrWhiteSpace(cover) ? known.CoverUrl : cover);
+        }
+        if (string.IsNullOrWhiteSpace(parsed.Title))
+        {
+            parsed = parsed with { Title = $"歌曲 {id}" };
         }
         Remember(parsed);
         return parsed;
@@ -730,11 +796,63 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
         }
     }
 
+    private Task<PlayerTrack?> ReadCurrentForGuardAsync(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(ReadSnapshot().Current);
+    }
+
+    private async Task<string> TakeOverGuardedNextAsync(
+        PlayerTrack target,
+        CancellationToken cancellationToken)
+    {
+        using var pauseResponse = await PostAsync(
+            "/stage/player/control",
+            new { action = "pause" },
+            cancellationToken).ConfigureAwait(false);
+        if (!pauseResponse.IsSuccessStatusCode)
+        {
+            return "Folia 兜底失败：无法暂停错误歌曲"
+                + $"（HTTP {(int)pauseResponse.StatusCode}）。";
+        }
+
+        if (!long.TryParse(target.Id, out var songId) || songId <= 0)
+        {
+            return "Folia 已暂停错误歌曲，但目标歌曲 ID 无效。";
+        }
+
+        using var insertResponse = await PostAsync(
+            "/stage/player/queue",
+            new { action = "insert-next", songId },
+            cancellationToken).ConfigureAwait(false);
+        if (!insertResponse.IsSuccessStatusCode)
+        {
+            return "Folia 已暂停错误歌曲，但重新插入目标失败"
+                + $"（HTTP {(int)insertResponse.StatusCode}）。";
+        }
+
+        using var nextResponse = await PostAsync(
+            "/stage/player/control",
+            new { action = "next" },
+            cancellationToken).ConfigureAwait(false);
+        return nextResponse.IsSuccessStatusCode
+            ? $"Folia 已暂停错误歌曲并切换目标：{target.DisplayName}"
+            : "Folia 已重新插入目标，但切换失败"
+              + $"（HTTP {(int)nextResponse.StatusCode}）。";
+    }
+
     private void Remember(PlayerTrack track)
     {
         if (!string.IsNullOrWhiteSpace(track.Id))
         {
             _knownTracks[track.Id] = track;
+            while (_knownTracks.Count > 1024)
+            {
+                var oldest = _knownTracks.Keys.FirstOrDefault();
+                if (string.IsNullOrEmpty(oldest)) break;
+                _knownTracks.TryRemove(oldest, out _);
+            }
         }
     }
 

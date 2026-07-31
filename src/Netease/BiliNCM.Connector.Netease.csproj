@@ -3,7 +3,20 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>BiliNCM.Connector.Netease</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
+
+  <Target Name="BuildNeteaseCefBridge" BeforeTargets="BeforeBuild">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\native\Netease\build-native.ps1&quot; -Configuration $(Configuration)" />
+  </Target>
+
+  <ItemGroup>
+    <None Include="bridge\AwooNcmCefBridge.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="Always"
+          ExcludeFromSingleFile="true" />
+  </ItemGroup>
 
   <ItemGroup>
     <Compile Include="..\Shared\ConnectorRuntime.cs" Link="Shared\ConnectorRuntime.cs" />
@@ -11,4 +24,3 @@
     <Compile Include="..\Shared\GuardedNextMonitor.cs" Link="Shared\GuardedNextMonitor.cs" />
   </ItemGroup>
 </Project>
-

@@ -23,6 +23,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _artworkLookups =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<string> _artworkLookupOrder = new();
     private readonly List<Task> _artworkTasks = [];
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private volatile bool _httpSearchFallbackUsed;
@@ -513,6 +514,26 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                     before);
             }
 
+            if (command == PlayerCommand.ArmNextGuard && track is not null)
+            {
+                RememberTrack(track);
+                var armed = _nextGuard.Arm(
+                    before.Current,
+                    track,
+                    ReadCurrentForGuardAsync,
+                    TakeOverGuardedNextAsync,
+                    _lifetimeCancellation.Token,
+                    out var guardMessage);
+                return new PlayerOperationResult(
+                    armed
+                        ? OperationOutcome.Accepted
+                        : OperationOutcome.Rejected,
+                    armed
+                        ? $"未重复插入酷狗队列；{guardMessage}"
+                        : "当前歌曲不可识别，无法只更新下一首兜底守卫。",
+                    before);
+            }
+
             if (command is not (PlayerCommand.PlaySelected
                 or PlayerCommand.InsertNext)
                 || track is null
@@ -563,7 +584,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                     track,
                     ReadCurrentForGuardAsync,
                     TakeOverGuardedNextAsync,
-                    cancellationToken,
+                    _lifetimeCancellation.Token,
                     out var guardMessage);
                 return new PlayerOperationResult(
                     armed
@@ -641,7 +662,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }, cancellationToken);
     }
 
-    private static async Task<string> TakeOverGuardedNextAsync(
+    private async Task<string> TakeOverGuardedNextAsync(
         PlayerTrack target,
         CancellationToken cancellationToken)
     {
@@ -802,6 +823,10 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                     _knownTracks[identity] = track;
                 }
             }
+            while (_knownTracks.Count > 2048)
+            {
+                _knownTracks.Remove(_knownTracks.Keys.First());
+            }
         }
     }
 
@@ -817,10 +842,28 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                 return;
             }
 
-            _artworkTasks.Add(ResolveArtworkAsync(
+            _artworkLookupOrder.Enqueue(identity);
+            while (_artworkLookupOrder.Count > 512)
+            {
+                _artworkLookups.Remove(_artworkLookupOrder.Dequeue());
+            }
+
+            var task = ResolveArtworkAsync(
                 identity,
                 current,
-                _lifetimeCancellation.Token));
+                _lifetimeCancellation.Token);
+            _artworkTasks.Add(task);
+            _ = task.ContinueWith(
+                completed =>
+                {
+                    lock (_trackSync)
+                    {
+                        _artworkTasks.Remove(completed);
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
     }
 

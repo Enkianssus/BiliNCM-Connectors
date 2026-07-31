@@ -4,3 +4,8 @@ compatibility_date = "2026-05-12"
 workers_dev = true
 preview_urls = false
 
+[[d1_databases]]
+binding = "FEEDBACK_DB"
+database_name = "bilincm-feedback"
+database_id = "304494eb-0c4f-4c88-b445-c830cdd090fa"
+migrations_dir = "migrations"

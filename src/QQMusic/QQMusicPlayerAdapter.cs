@@ -21,6 +21,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _artworkLookups =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<string> _artworkLookupOrder = new();
     private readonly List<Task> _artworkTasks = [];
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private CancellationTokenSource? _softwareNextCancellation;
@@ -116,6 +117,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                 var payload = ParsePayload(track);
                 _knownTracks[(payload.SongId, payload.SongType)] = track;
             }
+            TrimTrackCachesLocked();
         }
 
         return tracks;
@@ -149,6 +151,19 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                     before,
                     track,
                     cancellationToken).ConfigureAwait(false);
+            }
+            if (command == PlayerCommand.ArmNextGuard)
+            {
+                var guardResult = ArmSoftwareNext(
+                    before,
+                    track,
+                    cancellationToken);
+                return guardResult with
+                {
+                    Message = guardResult.IsSuccess
+                        ? $"未重复提交 QQ 原生下一首；{guardResult.Message}"
+                        : guardResult.Message
+                };
             }
 
             var executable = FindExecutablePath();
@@ -413,7 +428,8 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         }
 
         var pendingCancellation =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            CancellationTokenSource.CreateLinkedTokenSource(
+                _lifetimeCancellation.Token);
         CancellationTokenSource? previousCancellation;
         lock (_softwareNextSync)
         {
@@ -602,79 +618,80 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                     return;
                 }
 
-                var executable = FindExecutablePath();
-                if (string.IsNullOrWhiteSpace(executable))
-                {
+                cancellationToken.ThrowIfCancellationRequested();
+                    var executable = FindExecutablePath();
+                    if (string.IsNullOrWhiteSpace(executable))
+                    {
+                        SetSoftwareNextStatus(
+                            owner,
+                            "软件下一首失败：未找到 QQMusic.exe");
+                        return;
+                    }
+
                     SetSoftwareNextStatus(
                         owner,
-                        "软件下一首失败：未找到 QQMusic.exe");
-                    return;
-                }
-
-                SetSoftwareNextStatus(
-                    owner,
-                    $"检测到错误下一首：{observedTrack.DisplayName}；"
-                    + "QQ 音频已静音，正在暂停并接管");
-                var pause = await Task.Run(
-                    () => SendSingleInstanceCommand(
-                        executable,
-                        "/playcontrol",
-                        "'pause'",
-                        helperWaitMilliseconds: 100),
-                    cancellationToken).ConfigureAwait(false);
-                await Task.Delay(20, cancellationToken)
-                    .ConfigureAwait(false);
-                var play = await Task.Run(
-                    () => SendSingleInstanceCommand(
-                        executable,
-                        "/playbysongid",
-                        $"cmd_count==1&&id_0=={payload.SongId}"
-                        + $"&&songtype_0=={payload.SongType}",
-                        helperWaitMilliseconds: 100),
-                    cancellationToken).ConfigureAwait(false);
-
-                if (!play.Sent)
-                {
-                    audioMute.Restore();
-                    SetSoftwareNextStatus(
-                        owner,
-                        $"下一首目标发送失败：{play.Message}；"
-                        + "已恢复 QQ 原静音状态。");
-                    return;
-                }
-
-                var targetDeadline =
-                    DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
-                while (DateTimeOffset.UtcNow < targetDeadline)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    await Task.Delay(5, cancellationToken)
+                        $"检测到错误下一首：{observedTrack.DisplayName}；"
+                        + "QQ 音频已静音，正在暂停并接管");
+                    var pause = await Task.Run(
+                        () => SendSingleInstanceCommand(
+                            executable,
+                            "/playcontrol",
+                            "'pause'",
+                            helperWaitMilliseconds: 100),
+                        cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(20, cancellationToken)
                         .ConfigureAwait(false);
-                    var targetWindowTitle =
-                        ReadWindowTitle(windowHandle);
-                    var targetTrack =
-                        ParseQqWindowTrack(targetWindowTitle);
-                    if (targetTrack is not null
-                        && TrackMatches(targetTrack, track))
+                    var play = await Task.Run(
+                        () => SendSingleInstanceCommand(
+                            executable,
+                            "/playbysongid",
+                            $"cmd_count==1&&id_0=={payload.SongId}"
+                            + $"&&songtype_0=={payload.SongType}",
+                            helperWaitMilliseconds: 100),
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (!play.Sent)
                     {
                         audioMute.Restore();
                         SetSoftwareNextStatus(
                             owner,
-                            pause.Sent
-                                ? "已在静音中暂停错误歌曲，确认目标后恢复声音："
-                                  + track.DisplayName
-                                : "暂停未确认，但已在静音中切到目标并恢复声音："
-                                  + track.DisplayName);
+                            $"下一首目标发送失败：{play.Message}；"
+                            + "已恢复 QQ 原静音状态。");
                         return;
                     }
-                }
 
-                audioMute.Restore();
-                SetSoftwareNextStatus(
-                    owner,
-                    $"已发送目标但 3 秒内未能确认：{track.DisplayName}；"
-                    + "为避免 QQ 一直静音，已恢复原静音状态。");
-                return;
+                    var targetDeadline =
+                        DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+                    while (DateTimeOffset.UtcNow < targetDeadline)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        await Task.Delay(5, cancellationToken)
+                            .ConfigureAwait(false);
+                        var targetWindowTitle =
+                            ReadWindowTitle(windowHandle);
+                        var targetTrack =
+                            ParseQqWindowTrack(targetWindowTitle);
+                        if (targetTrack is not null
+                            && TrackMatches(targetTrack, track))
+                        {
+                            audioMute.Restore();
+                            SetSoftwareNextStatus(
+                                owner,
+                                pause.Sent
+                                    ? "已在静音中暂停错误歌曲，确认目标后恢复声音："
+                                      + track.DisplayName
+                                    : "暂停未确认，但已在静音中切到目标并恢复声音："
+                                      + track.DisplayName);
+                            return;
+                        }
+                    }
+
+                    audioMute.Restore();
+                    SetSoftwareNextStatus(
+                        owner,
+                        $"已发送目标但 3 秒内未能确认：{track.DisplayName}；"
+                        + "为避免 QQ 一直静音，已恢复原静音状态。");
+                    return;
             }
 
             SetSoftwareNextStatus(
@@ -836,6 +853,20 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
             {
                 // Tracks observed from the QQ window may not contain catalog ids.
             }
+            TrimTrackCachesLocked();
+        }
+    }
+
+    private void TrimTrackCachesLocked()
+    {
+        while (_knownTracks.Count > 1024)
+        {
+            _knownTracks.Remove(_knownTracks.Keys.First());
+        }
+        while (_resolvedCurrentTracks.Count > 1024)
+        {
+            _resolvedCurrentTracks.Remove(
+                _resolvedCurrentTracks.Keys.First());
         }
     }
 
@@ -849,10 +880,28 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                 return;
             }
 
-            _artworkTasks.Add(ResolveArtworkAsync(
+            _artworkLookupOrder.Enqueue(lookupKey);
+            while (_artworkLookupOrder.Count > 512)
+            {
+                _artworkLookups.Remove(_artworkLookupOrder.Dequeue());
+            }
+
+            var task = ResolveArtworkAsync(
                 lookupKey,
                 current,
-                _lifetimeCancellation.Token));
+                _lifetimeCancellation.Token);
+            _artworkTasks.Add(task);
+            _ = task.ContinueWith(
+                completed =>
+                {
+                    lock (_trackSync)
+                    {
+                        _artworkTasks.Remove(completed);
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
     }
 
@@ -895,6 +944,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
             {
                 _knownTracks[(match.SongId, match.SongType)] = track;
                 _resolvedCurrentTracks[lookupKey] = track;
+                TrimTrackCachesLocked();
             }
         }
         catch (OperationCanceledException)
