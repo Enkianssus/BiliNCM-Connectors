@@ -1,6 +1,6 @@
 const CORE_PROJECTS = {
   awoo: {
-    name: 'Awoo MusicBot 1.1.x',
+    name: '嗷呜点歌机 1.1.x',
     repo: 'Enkianssus/AwooMusicBot',
     versionPrefix: '1.1.',
     exeName: 'awoo-musicbot-win-Portable.zip',
@@ -825,8 +825,8 @@ function renderHome(host) {
       <div class="status">● Cloudflare 分发节点运行中</div>
       ${cards}
       <section class="card">
-        <h2>Awoo MusicBot 播放器连接器</h2>
-        <p>网易云音乐、酷狗音乐、QQ 音乐和 Folia 连接器独立更新，不需要同步升级 Awoo MusicBot 本体。</p>
+        <h2>嗷呜点歌机播放器连接器</h2>
+        <p>网易云音乐、酷狗音乐、QQ 音乐和 Folia 连接器独立更新，不需要同步升级嗷呜点歌机本体。</p>
         <div class="endpoint">https://${host}/connectors/v1/catalog.json</div>
         <div class="actions" style="margin-top:16px">
           <a href="/connectors/v1/catalog.json">查看版本清单</a>
