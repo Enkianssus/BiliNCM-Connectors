@@ -570,9 +570,9 @@ async function createCompatibilityReport(request, env) {
     body.executionAllowed ? 1 : 0,
     cleanText(body.summary, 1000),
     diagnosticsJson,
-    cleanText(request.cf?.country || '', 8),
+    '',
     ipHash,
-    cleanText(request.headers.get('User-Agent') || '', 300)
+    ''
   ).run();
 
   return jsonResponse({
@@ -598,8 +598,7 @@ async function listCompatibilityReports(request, env) {
     `SELECT id, fingerprint, first_seen_at, last_seen_at, reports_count,
             player, player_version, connector_version, architecture,
             client_sha256, common_sha256, known_profile_matched,
-            execution_allowed, summary, diagnostics_json, country,
-            user_agent
+            execution_allowed, summary, diagnostics_json
        FROM compatibility_reports
       ORDER BY last_seen_at DESC LIMIT ?`
   ).bind(limit).all();
@@ -620,9 +619,7 @@ async function listCompatibilityReports(request, env) {
       knownProfileMatched: Boolean(row.known_profile_matched),
       executionAllowed: Boolean(row.execution_allowed),
       summary: row.summary,
-      diagnostics: safeParseJson(row.diagnostics_json, {}),
-      country: row.country,
-      userAgent: row.user_agent
+      diagnostics: safeParseJson(row.diagnostics_json, {})
     }))
   });
 }
