@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "fileVersion": "22.41",
+  "clientSha256": "A5F3E917A5233D925268C34656E49096B6223B74631C5002DB606AD4B2C7A3F3",
+  "commonSha256": "36775378403DB33D049EE87BCAD654BA3A041B7D41259CD7EDFE65457D7E2A06",
+  "singleSongPlayDispatchRva": "0x0048C124",
+  "expectedPlayDispatchBytes": "E8 67 55 16 00",
+  "getCatManagerRva": "0x0000F0ED",
+  "getQqUinExRva": "0x0002E089",
+  "songItemConstructorRva": "0x0004B800",
+  "songItemDestructorRva": "0x0004B340",
+  "addSongsRva": "0x0043DA80",
+  "hiddenCategoryIdRva": "0x00C301A0",
+  "getListRootRva": "0x006142F0",
+  "getListHelperRva": "0x00614450",
+  "getCategoryCountRva": "0x004ED5D0",
+  "songItemSize": "0xA0",
+  "evidence": "2026-08-01 校准 cmd_count=1 单曲分支并现场动态验证"
+}

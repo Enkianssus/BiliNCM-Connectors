@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "fileVersion": "22.22",
+  "clientSha256": "FF0AB7911EB2ACF433F2DAF0FC4BA48FFFC64169CD822CE4D5B00E88FA180A50",
+  "commonSha256": "9F7FC7DF5BC4BBE9B4C3377449CBCB3C47A218A934FAAE4DFF8578C3EDAF652F",
+  "singleSongPlayDispatchRva": "0x0047A4F4",
+  "expectedPlayDispatchBytes": "E8 D7 53 16 00",
+  "getCatManagerRva": "0x0000F0ED",
+  "getQqUinExRva": "0x0002E089",
+  "songItemConstructorRva": "0x0004A2A0",
+  "songItemDestructorRva": "0x00049DE0",
+  "addSongsRva": "0x0042C010",
+  "hiddenCategoryIdRva": "0x00C141A0",
+  "getListRootRva": "0x00602430",
+  "getListHelperRva": "0x00602590",
+  "getCategoryCountRva": "0x004DBBC0",
+  "songItemSize": "0xA0",
+  "evidence": "2026-07-30 现场捕捉右键下一首播放并重复验证"
+}

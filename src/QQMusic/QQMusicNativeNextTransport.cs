@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using Microsoft.Win32.SafeHandles;
 
 namespace QQMusicControlPoc;
@@ -34,7 +33,7 @@ internal sealed record QQMusicNativeNextResult(
     string? Error);
 
 /// <summary>
-/// Executes the same AddSongs(mode=0) operation as QQ Music 22.22's
+/// Executes the same AddSongs(mode=0) operation as a calibrated QQ Music
 /// context-menu "play next" command.
 ///
 /// /playbysongid already performs the network query and creates a native
@@ -49,29 +48,6 @@ internal sealed record QQMusicNativeNextResult(
 /// </summary>
 internal static class QQMusicNativeNextTransport
 {
-    private const string ExecutablePath =
-        @"F:\Program Files\QQMusic\QQMusic.exe";
-    private const string ExpectedModulePath =
-        @"F:\Program Files\QQMusic\QQMusic.dll";
-    private const string ExpectedCommonModulePath =
-        @"F:\Program Files\QQMusic\QQMusicCommon.dll";
-    private const string ExpectedFileVersion = "22.22";
-    private const string ExpectedSha256 =
-        "FF0AB7911EB2ACF433F2DAF0FC4BA48FFFC64169CD822CE4D5B00E88FA180A50";
-
-    // 1047A4F4: call CQQMusicDlg's final one-song playback dispatcher.
-    private const int SingleSongPlayDispatchRva = 0x0047A4F4;
-    private const int GetCatManagerRva = 0x0000F0ED;
-    private const int GetQqUinExRva = 0x0002E089;
-    private const int SongItemConstructorRva = 0x0004A2A0;
-    private const int SongItemDestructorRva = 0x00049DE0;
-    private const int AddSongsRva = 0x0042C010;
-    private const int HiddenCategoryIdRva = 0x00C141A0;
-    private const int GetListRootRva = 0x00602430;
-    private const int GetListHelperRva = 0x00602590;
-    private const int GetCategoryCountRva = 0x004DBBC0;
-
-    private const int SongItemSize = 0xA0;
     private const int DataOffset = 0x300;
     private const int DataSize = 0x100;
     private const int VectorOffset = 0xB8;
@@ -89,10 +65,7 @@ internal static class QQMusicNativeNextTransport
     private const uint MemRelease = 0x8000;
     private const uint PageExecuteReadWrite = 0x40;
     private const string OperationMutexName =
-        @"Local\QQMusicControlPoc.NativeNextUiTrampoline.22.22";
-
-    private static readonly byte[] ExpectedPlayDispatchBytes =
-        [0xE8, 0xD7, 0x53, 0x16, 0x00];
+        @"Local\QQMusicControlPoc.NativeNextUiTrampoline";
 
     private static readonly SemaphoreSlim OperationGate = new(1, 1);
 
@@ -148,6 +121,7 @@ internal static class QQMusicNativeNextTransport
         var hiddenCategoryCount = 0;
         string? error = null;
         TargetModules? target = null;
+        QQMusicNativeNextProfile? profile = null;
         SafeProcessHandle? processHandle = null;
         Mutex? operationMutex = null;
         var mutexAcquired = false;
@@ -191,12 +165,29 @@ internal static class QQMusicNativeNextTransport
             target = FindTarget();
             targetProcessId = target.Process.Id;
             modulePath = target.ClientModulePath;
-            fileVersion = FileVersionInfo
-                .GetVersionInfo(modulePath)
-                .FileVersion
-                ?? string.Empty;
-            sha256 = ComputeSha256(modulePath);
-            VerifyTarget(target, fileVersion, sha256);
+            var analysis = QQMusicNativeNextAnalyzer.AnalyzeFiles(
+                target.ClientModulePath,
+                target.CommonModulePath,
+                target.ExecutablePath,
+                target.Process.Id);
+            fileVersion = analysis.FileVersion;
+            sha256 = analysis.ClientSha256;
+            profile = analysis.Profile;
+            if (!analysis.ExecutionAllowed || profile is null)
+            {
+                var failedChecks = string.Join(
+                    "; ",
+                    analysis.Checks
+                        .Where(check =>
+                            check.Required && !check.Passed)
+                        .Select(check =>
+                            $"{check.Name}: {check.Detail}"));
+                throw new InvalidOperationException(
+                    analysis.Summary
+                    + (string.IsNullOrWhiteSpace(failedChecks)
+                        ? string.Empty
+                        : " " + failedChecks));
+            }
 
             processHandle = OpenProcess(
                 ProcessVmOperation
@@ -212,18 +203,21 @@ internal static class QQMusicNativeNextTransport
 
             patchAddress = nint.Add(
                 target.ClientModuleBase,
-                SingleSongPlayDispatchRva);
+                profile.SingleSongPlayDispatchRva);
             var currentBytes = ReadBytes(
                 processHandle,
                 patchAddress,
-                ExpectedPlayDispatchBytes.Length);
+                profile.ExpectedPlayDispatchBytes.Length);
             observedOriginalBytes = FormatBytes(currentBytes);
-            if (!currentBytes.SequenceEqual(ExpectedPlayDispatchBytes))
+            if (!currentBytes.SequenceEqual(
+                    profile.ExpectedPlayDispatchBytes))
             {
                 throw new InvalidOperationException(
                     "单曲播放分发指令不匹配，已拒绝写入。"
                     + $" 实际={observedOriginalBytes}，"
-                    + $"预期={FormatBytes(ExpectedPlayDispatchBytes)}");
+                    + "预期="
+                    + FormatBytes(
+                        profile.ExpectedPlayDispatchBytes));
             }
 
             remoteBlock = VirtualAllocEx(
@@ -241,7 +235,8 @@ internal static class QQMusicNativeNextTransport
             var trampoline = BuildUiTrampoline(
                 dataAddress,
                 target.ClientModuleBase,
-                target.CommonModuleBase);
+                target.CommonModuleBase,
+                profile);
             WriteBytes(processHandle, remoteBlock, trampoline);
             WriteBytes(
                 processHandle,
@@ -258,7 +253,9 @@ internal static class QQMusicNativeNextTransport
                 redirectBytes);
             patchApplied = true;
 
-            using var helper = StartSingleSongHelper(song);
+            using var helper = StartSingleSongHelper(
+                target.ExecutablePath,
+                song);
             commandSent = true;
             helperExited = helper.WaitForExit(3500);
             if (!helperExited)
@@ -350,12 +347,13 @@ internal static class QQMusicNativeNextTransport
                     WriteCodeBytes(
                         processHandle,
                         patchAddress,
-                        ExpectedPlayDispatchBytes);
+                        profile!.ExpectedPlayDispatchBytes);
                     originalCodeRestored = ReadBytes(
                             processHandle,
                             patchAddress,
-                            ExpectedPlayDispatchBytes.Length)
-                        .SequenceEqual(ExpectedPlayDispatchBytes);
+                            profile.ExpectedPlayDispatchBytes.Length)
+                        .SequenceEqual(
+                            profile.ExpectedPlayDispatchBytes);
                     if (!originalCodeRestored)
                     {
                         AppendError(
@@ -467,7 +465,8 @@ internal static class QQMusicNativeNextTransport
             remoteMemoryReleased,
             verification,
             stopwatch.ElapsedMilliseconds,
-            "QQMusic 22.22 UI callback trampoline "
+            $"QQMusic {profile?.FileVersion ?? fileVersion} "
+                + "validated UI callback trampoline "
                 + "-> GetSongInfo(last resolved item) "
                 + "-> AddSongs(mode=0)",
             error);
@@ -476,37 +475,38 @@ internal static class QQMusicNativeNextTransport
     private static byte[] BuildUiTrampoline(
         nint dataAddress,
         nint clientModuleBase,
-        nint commonModuleBase)
+        nint commonModuleBase,
+        QQMusicNativeNextProfile profile)
     {
         var emitter = new X86Emitter();
         var data = checked((uint)dataAddress.ToInt64());
         var getCatManager = Address(
             commonModuleBase,
-            GetCatManagerRva);
+            profile.GetCatManagerRva);
         var getQqUinEx = Address(
             commonModuleBase,
-            GetQqUinExRva);
+            profile.GetQqUinExRva);
         var songItemConstructor = Address(
             clientModuleBase,
-            SongItemConstructorRva);
+            profile.SongItemConstructorRva);
         var songItemDestructor = Address(
             clientModuleBase,
-            SongItemDestructorRva);
+            profile.SongItemDestructorRva);
         var addSongs = Address(
             clientModuleBase,
-            AddSongsRva);
+            profile.AddSongsRva);
         var hiddenCategoryIdAddress = Address(
             clientModuleBase,
-            HiddenCategoryIdRva);
+            profile.HiddenCategoryIdRva);
         var getListRoot = Address(
             clientModuleBase,
-            GetListRootRva);
+            profile.GetListRootRva);
         var getListHelper = Address(
             clientModuleBase,
-            GetListHelperRva);
+            profile.GetListHelperRva);
         var getCategoryCount = Address(
             clientModuleBase,
-            GetCategoryCountRva);
+            profile.GetCategoryCountRva);
 
         // Preserve the original query callback's complete register/flag state.
         emitter.Bytes(0x9C, 0x60, 0xBF);
@@ -575,7 +575,7 @@ internal static class QQMusicNativeNextTransport
         emitter.Bytes(0x89, 0x87);
         emitter.UInt32(VectorOffset);
         emitter.Bytes(0x05);
-        emitter.UInt32(SongItemSize);
+        emitter.UInt32(checked((uint)profile.SongItemSize));
         emitter.Bytes(0x89, 0x87);
         emitter.UInt32(VectorOffset + 4);
         emitter.Bytes(0x89, 0x87);
@@ -633,6 +633,7 @@ internal static class QQMusicNativeNextTransport
             {
                 ProcessModule? client = null;
                 ProcessModule? common = null;
+                var executable = process.MainModule;
                 foreach (ProcessModule module in process.Modules)
                 {
                     if (module.ModuleName.Equals(
@@ -649,13 +650,16 @@ internal static class QQMusicNativeNextTransport
                     }
                 }
 
-                if (client is null || common is null)
+                if (executable is null
+                    || client is null
+                    || common is null)
                 {
                     continue;
                 }
 
                 matches.Add(new TargetModules(
                     process,
+                    executable.FileName,
                     client.BaseAddress,
                     client.FileName,
                     common.BaseAddress,
@@ -699,54 +703,13 @@ internal static class QQMusicNativeNextTransport
         return selected;
     }
 
-    private static void VerifyTarget(
-        TargetModules target,
-        string fileVersion,
-        string sha256)
-    {
-        if (!PathEquals(
-                target.ClientModulePath,
-                ExpectedModulePath))
-        {
-            throw new InvalidOperationException(
-                $"拒绝修改非预期模块：{target.ClientModulePath}");
-        }
-
-        if (!PathEquals(
-                target.CommonModulePath,
-                ExpectedCommonModulePath))
-        {
-            throw new InvalidOperationException(
-                "QQMusicCommon.dll 路径不匹配："
-                + target.CommonModulePath);
-        }
-
-        if (!string.Equals(
-                fileVersion,
-                ExpectedFileVersion,
-                StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"QQMusic.dll 版本不匹配：实际 {fileVersion}，"
-                + $"只支持 {ExpectedFileVersion}。");
-        }
-
-        if (!string.Equals(
-                sha256,
-                ExpectedSha256,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                "QQMusic.dll 哈希不匹配，已拒绝执行版本锁定操作。");
-        }
-    }
-
     private static Process StartSingleSongHelper(
+        string executablePath,
         QQMusicSongReference song)
     {
         var startInfo = new ProcessStartInfo
         {
-            FileName = ExecutablePath,
+            FileName = executablePath,
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden
@@ -776,12 +739,6 @@ internal static class QQMusicNativeNextTransport
         {
             // The helper may have exited between checks.
         }
-    }
-
-    private static string ComputeSha256(string path)
-    {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(SHA256.HashData(stream));
     }
 
     private static byte[] ReadBytes(
@@ -935,14 +892,6 @@ internal static class QQMusicNativeNextTransport
         }
     }
 
-    private static bool PathEquals(string left, string right)
-    {
-        return string.Equals(
-            Path.GetFullPath(left).TrimEnd('\\'),
-            Path.GetFullPath(right).TrimEnd('\\'),
-            StringComparison.OrdinalIgnoreCase);
-    }
-
     private static string FormatBytes(IEnumerable<byte> bytes)
     {
         return string.Join(
@@ -1034,6 +983,7 @@ internal static class QQMusicNativeNextTransport
 
     private sealed record TargetModules(
         Process Process,
+        string ExecutablePath,
         nint ClientModuleBase,
         string ClientModulePath,
         nint CommonModuleBase,

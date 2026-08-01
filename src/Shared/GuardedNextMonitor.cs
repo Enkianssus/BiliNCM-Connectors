@@ -46,7 +46,7 @@ internal sealed class GuardedNextMonitor : IDisposable
 
         message =
             $"下一首守卫已启动：若实际下一首不是 {target.DisplayName}，"
-            + "将先暂停/停止错误歌曲，再立即播放目标。";
+            + "将执行连接器的安全兜底并切换到目标。";
         return true;
     }
 
@@ -106,7 +106,7 @@ internal sealed class GuardedNextMonitor : IDisposable
 
                 SetStatus(
                     owner,
-                    $"检测到错误下一首：{observed.DisplayName}；正在暂停并接管");
+                    $"检测到错误下一首：{observed.DisplayName}；正在兜底接管");
                 var result = await takeOver(target, cancellationToken)
                     .ConfigureAwait(false);
                 SetStatus(owner, result);

@@ -3,11 +3,16 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>BiliNCM.Connector.QQMusic</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
+    <Version>1.4.0</Version>
+    <InformationalVersion>$(Version)</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="..\Shared\ConnectorRuntime.cs" Link="Shared\ConnectorRuntime.cs" />
     <Compile Include="..\Shared\PlayerContracts.cs" Link="Shared\PlayerContracts.cs" />
+    <Content Include="..\..\profiles\qqmusic\*.json"
+             Link="profiles\qqmusic\%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
-

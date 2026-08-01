@@ -43,7 +43,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         Toggle: true,
         Next: true,
         InsertNext: true,
-        InsertNextLevel: "原生插入 + 错误下一首停止接管守卫");
+        InsertNextLevel: "原生插入 + 错误下一首重新插入并切换守卫");
 
     public async Task<PlayerSnapshot> ProbeAsync(
         CancellationToken cancellationToken)
@@ -90,24 +90,163 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
         var trimmedQuery = query.Trim();
-        var keywordTask = SearchByKeywordAsync(
+        var hasPermanentChain = TryExtractPermanentShareChain(
             trimmedQuery,
+            out var permanentChain);
+        var hasTemporaryCode = TryExtractTemporaryKugouCode(
+            trimmedQuery,
+            out var temporaryCode);
+        var keywordQuery = hasPermanentChain
+            ? permanentChain
+            : hasTemporaryCode
+                ? temporaryCode
+            : trimmedQuery;
+        var keywordTask = SearchByKeywordAsync(
+            keywordQuery,
             cancellationToken);
-        if (!trimmedQuery.All(char.IsAsciiDigit))
+        Task<IReadOnlyList<PlayerTrack>>? exactTask = null;
+        if (hasPermanentChain)
+        {
+            exactTask = TryResolvePermanentShareChainAsync(
+                permanentChain,
+                cancellationToken);
+        }
+        else if (hasTemporaryCode)
+        {
+            exactTask = TryResolveKugouCodeAsync(
+                temporaryCode,
+                cancellationToken);
+        }
+
+        if (exactTask is null)
         {
             return await keywordTask.ConfigureAwait(false);
         }
 
-        var codeResults = await TryResolveKugouCodeAsync(
-            trimmedQuery,
-            cancellationToken).ConfigureAwait(false);
-        if (codeResults.Count > 0)
+        var exactResults = await exactTask.ConfigureAwait(false);
+        if (exactResults.Count > 0)
         {
             _ = ObserveBackgroundTaskAsync(keywordTask);
-            return codeResults;
+            return exactResults;
         }
 
         return await keywordTask.ConfigureAwait(false);
+    }
+
+    private static bool TryExtractPermanentShareChain(
+        string query,
+        out string chain)
+    {
+        chain = string.Empty;
+        var match = Regex.Match(
+            query,
+            "(?:^|[?&])chain=([A-Za-z0-9_-]{6,32})(?:$|[&#])",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (match.Success)
+        {
+            chain = match.Groups[1].Value;
+            return true;
+        }
+
+        if (Regex.IsMatch(
+                query,
+                "^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9_-]{8,32}$",
+                RegexOptions.CultureInvariant))
+        {
+            chain = query;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractTemporaryKugouCode(
+        string query,
+        out string code)
+    {
+        code = string.Empty;
+        var match = Regex.Match(
+            query,
+            "^(?:#([0-9]+)#|([0-9]+))$",
+            RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        code = match.Groups[1].Success
+            ? match.Groups[1].Value
+            : match.Groups[2].Value;
+        return code.Length > 0;
+    }
+
+    private async Task<IReadOnlyList<PlayerTrack>>
+        TryResolvePermanentShareChainAsync(
+            string chain,
+            CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                "https://m.kugou.com/share/song.html?chain="
+                + Uri.EscapeDataString(chain));
+            request.Headers.TryAddWithoutValidation(
+                "User-Agent",
+                "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
+                + "Chrome/122.0 Mobile Safari/537.36");
+            request.Headers.Referrer = new Uri("https://m.kugou.com/");
+            using var response = await _httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return [];
+            }
+
+            var html = await response.Content.ReadAsStringAsync(
+                cancellationToken).ConfigureAwait(false);
+            var phpParamMatch = Regex.Match(
+                html,
+                @"var\s+phpParam\s*=\s*(\{.*?\})\s*;",
+                RegexOptions.Singleline | RegexOptions.CultureInvariant);
+            if (!phpParamMatch.Success)
+            {
+                return [];
+            }
+
+            using var document = JsonDocument.Parse(
+                phpParamMatch.Groups[1].Value);
+            var root = document.RootElement;
+            var song = root;
+            if (root.TryGetProperty("song_info", out var songInfo)
+                && songInfo.ValueKind == JsonValueKind.Object
+                && songInfo.TryGetProperty("data", out var data)
+                && data.ValueKind == JsonValueKind.Object)
+            {
+                song = data;
+            }
+
+            var track = CreateMixedSearchTrack(song);
+            if (track is null)
+            {
+                return [];
+            }
+
+            RememberTrack(
+                track,
+                ReadJsonTextAny(song, "FileHash", "Hash", "hash"));
+            return [track];
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     private async Task<IReadOnlyList<PlayerTrack>> SearchByKeywordAsync(
@@ -191,6 +330,37 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             foreach (var group in groups.EnumerateArray())
             {
                 if (!ReadJsonText(group, "type").Equals(
+                        "recommend",
+                        StringComparison.OrdinalIgnoreCase)
+                    || !group.TryGetProperty("lists", out var recommendations)
+                    || recommendations.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                var results = recommendations
+                    .EnumerateArray()
+                    .Select(CreateCodeRecommendationTrack)
+                    .Where(track => track is not null)
+                    .Cast<PlayerTrack>()
+                    .ToArray();
+                foreach (var track in results)
+                {
+                    using var nativeData = JsonDocument.Parse(track.NativeData);
+                    RememberTrack(
+                        track,
+                        ReadJsonText(nativeData.RootElement, "hash"));
+                }
+
+                if (results.Length > 0)
+                {
+                    return results;
+                }
+            }
+
+            foreach (var group in groups.EnumerateArray())
+            {
+                if (!ReadJsonText(group, "type").Equals(
                         "song",
                         StringComparison.OrdinalIgnoreCase)
                     || ReadJsonLong(group, "isshareresult") != 1
@@ -230,6 +400,123 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }
 
         return [];
+    }
+
+    private static PlayerTrack? CreateCodeRecommendationTrack(
+        JsonElement recommendation)
+    {
+        if (!recommendation.TryGetProperty("list", out var song)
+            || song.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var hash = ReadJsonTextAny(song, "FileHash", "Hash", "hash")
+            .ToUpperInvariant();
+        var albumAudioId = ReadJsonLongAny(
+            song,
+            "MixSongID",
+            "mixsongid",
+            "album_audio_id");
+        var filename = StripSearchMarkup(
+            ReadJsonTextAny(song, "FileName", "filename", "fileName"));
+        var title = StripSearchMarkup(
+            ReadJsonTextAny(recommendation, "title", "name"));
+        var artist = string.Empty;
+        if (recommendation.TryGetProperty("info", out var info)
+            && info.ValueKind == JsonValueKind.Object)
+        {
+            artist = StripSearchMarkup(
+                ReadJsonTextAny(info, "username", "author_name"));
+        }
+
+        if ((string.IsNullOrWhiteSpace(title)
+             || string.IsNullOrWhiteSpace(artist))
+            && !string.IsNullOrWhiteSpace(filename))
+        {
+            var separator = filename.IndexOf(" - ", StringComparison.Ordinal);
+            if (separator > 0)
+            {
+                if (string.IsNullOrWhiteSpace(artist))
+                {
+                    artist = filename[..separator].Trim();
+                }
+                if (string.IsNullOrWhiteSpace(title))
+                {
+                    title = filename[(separator + 3)..].Trim();
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(hash)
+            || string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        var durationSeconds = ReadJsonLongAny(
+            song,
+            "Duration",
+            "duration",
+            "timeLength");
+        var canonical = new Dictionary<string, object?>
+        {
+            ["filename"] = filename,
+            ["hash"] = hash,
+            ["filesize"] = ReadJsonLongAny(
+                song,
+                "FileSize",
+                "filesize",
+                "fileSize").ToString(CultureInfo.InvariantCulture),
+            ["timelength"] = (durationSeconds * 1000).ToString(
+                CultureInfo.InvariantCulture),
+            ["duration"] = durationSeconds,
+            ["bitrate"] = ReadJsonLongAny(
+                song,
+                "Bitrate",
+                "bitrate",
+                "bitRate").ToString(CultureInfo.InvariantCulture),
+            ["mvhash"] = ReadJsonTextAny(song, "MvHash", "mvhash"),
+            ["isvip"] = ReadJsonLongAny(song, "IsVip", "isvip"),
+            ["privilege"] = ReadJsonLongAny(
+                song,
+                "Privilege",
+                "privilege"),
+            ["album_id"] = ReadJsonTextAny(
+                song,
+                "AlbumID",
+                "album_id"),
+            ["mixsongid"] = albumAudioId > 0
+                ? albumAudioId.ToString(CultureInfo.InvariantCulture)
+                : "0",
+            ["specialid"] = "0",
+            ["songname"] = title,
+            ["singername"] = artist,
+            ["album_name"] = ReadJsonTextAny(
+                song,
+                "AlbumName",
+                "album_name"),
+            ["audio_id"] = ReadJsonLongAny(
+                song,
+                "Audioid",
+                "audio_id",
+                "Scid")
+        };
+        var cover = GetCoverUrl(song);
+        if (string.IsNullOrWhiteSpace(cover))
+        {
+            cover = GetCoverUrl(recommendation);
+        }
+
+        return new PlayerTrack(
+            albumAudioId > 0
+                ? albumAudioId.ToString(CultureInfo.InvariantCulture)
+                : hash,
+            title,
+            artist,
+            ReadJsonTextAny(song, "AlbumName", "album_name"),
+            JsonSerializer.Serialize(canonical),
+            cover);
     }
 
     private async Task<HttpResponseMessage> SendMixedSearchAsync(
@@ -329,9 +616,18 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             "audio_id",
             "Scid");
         var title = StripSearchMarkup(
-            ReadJsonTextAny(song, "OriSongName", "SongName", "songname"));
+            ReadJsonTextAny(
+                song,
+                "OriSongName",
+                "SongName",
+                "songname",
+                "songName"));
         var artist = StripSearchMarkup(
-            ReadJsonTextAny(song, "SingerName", "singername"));
+            ReadJsonTextAny(
+                song,
+                "SingerName",
+                "singername",
+                "author_name"));
         if (string.IsNullOrWhiteSpace(hash)
             || string.IsNullOrWhiteSpace(title))
         {
@@ -341,23 +637,26 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         var durationSeconds = ReadJsonLongAny(
             song,
             "Duration",
-            "duration");
+            "duration",
+            "timeLength");
         var canonical = new Dictionary<string, object?>
         {
             ["filename"] = StripSearchMarkup(
-                ReadJsonTextAny(song, "FileName", "filename")),
+                ReadJsonTextAny(song, "FileName", "filename", "fileName")),
             ["hash"] = hash,
             ["filesize"] = ReadJsonLongAny(
                 song,
                 "FileSize",
-                "filesize").ToString(CultureInfo.InvariantCulture),
+                "filesize",
+                "fileSize").ToString(CultureInfo.InvariantCulture),
             ["timelength"] = (durationSeconds * 1000).ToString(
                 CultureInfo.InvariantCulture),
             ["duration"] = durationSeconds,
             ["bitrate"] = ReadJsonLongAny(
                 song,
                 "Bitrate",
-                "bitrate").ToString(CultureInfo.InvariantCulture),
+                "bitrate",
+                "bitRate").ToString(CultureInfo.InvariantCulture),
             ["mvhash"] = ReadJsonTextAny(song, "MvHash", "mvhash"),
             ["isvip"] = ReadJsonLongAny(song, "IsVip", "isvip"),
             ["privilege"] = ReadJsonLongAny(
@@ -367,18 +666,21 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             ["album_id"] = ReadJsonTextAny(
                 song,
                 "AlbumID",
-                "album_id"),
+                "album_id",
+                "albumid",
+                "req_albumid"),
             ["mixsongid"] = ReadJsonTextAny(
                 song,
                 "MixSongID",
-                "mixsongid") is { Length: > 0 } mixSongId
+                "mixsongid",
+                "album_audio_id") is { Length: > 0 } mixSongId
                 ? mixSongId
                 : "0",
             ["specialid"] = "0",
             ["songname"] = title,
             ["singername"] = artist,
             ["album_name"] = StripSearchMarkup(
-                ReadJsonTextAny(song, "AlbumName", "album_name")),
+                ReadJsonTextAny(song, "AlbumName", "album_name", "albumName")),
             ["audio_id"] = audioId
         };
         var track = new PlayerTrack(
@@ -386,7 +688,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             title,
             artist,
             StripSearchMarkup(
-                ReadJsonTextAny(song, "AlbumName", "album_name")),
+                ReadJsonTextAny(song, "AlbumName", "album_name", "albumName")),
             JsonSerializer.Serialize(canonical),
             GetCoverUrl(song));
         return track;
@@ -555,14 +857,18 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                     before);
             }
 
-            var playImmediately = command == PlayerCommand.PlaySelected;
-            if (playImmediately)
+            var advanceImmediately = command == PlayerCommand.PlaySelected;
+            if (advanceImmediately)
             {
                 _nextGuard.Cancel(
                     "下一首守卫已因立即播放其他歌曲而取消");
             }
 
-            var payload = BuildOnlinePayload(track.NativeData, playImmediately);
+            // KuGou's Play=1/Insert=0/Force=1 payload rebuilds or appends to
+            // the player's queue. Always insert exactly one track after the
+            // current item. "Play selected" is implemented by advancing to
+            // that newly inserted item with KuGou's targeted Next command.
+            var payload = BuildInsertNextPayload(track.NativeData);
             var delivery = await Task.Run(
                 () => KugouCopyDataTransport.Send(
                     endpoint.Value.Handle,
@@ -577,7 +883,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                     await ProbeAsync(cancellationToken).ConfigureAwait(false));
             }
 
-            if (!playImmediately)
+            if (!advanceImmediately)
             {
                 var armed = _nextGuard.Arm(
                     before.Current,
@@ -590,14 +896,41 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                     armed
                         ? OperationOutcome.Accepted
                         : OperationOutcome.Indeterminate,
-                    "酷狗已接受实验队列负载。"
+                    "酷狗已将目标歌曲插入当前歌曲之后。"
                     + (armed
                         ? $" {guardMessage}"
                         : " 当前歌曲不可识别，守卫未启动。"),
                     await ProbeAsync(cancellationToken).ConfigureAwait(false));
             }
 
-            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(8);
+            var guardArmed = _nextGuard.Arm(
+                before.Current,
+                track,
+                ReadCurrentForGuardAsync,
+                TakeOverGuardedNextAsync,
+                _lifetimeCancellation.Token,
+                out _);
+            await Task.Delay(60, cancellationToken).ConfigureAwait(false);
+            var advance = await Task.Run(
+                () => KugouNativeController.SendDirectKugouCommand(
+                    KugouAppCommand.NextTrack,
+                    TimeSpan.FromSeconds(6)),
+                cancellationToken).ConfigureAwait(false);
+            if (!advance.Sent)
+            {
+                return new PlayerOperationResult(
+                    OperationOutcome.Indeterminate,
+                    "酷狗已将目标插入下一首，但内部下一首消息未被接受；"
+                    + (guardArmed
+                        ? "兜底守卫仍在等待自然切歌。"
+                        : "当前歌曲不可识别，无法启动兜底守卫。")
+                    + (string.IsNullOrWhiteSpace(advance.Error)
+                        ? string.Empty
+                        : $" {advance.Error}"),
+                    await ProbeAsync(cancellationToken).ConfigureAwait(false));
+            }
+
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
             var afterPlay = before;
             while (DateTimeOffset.UtcNow < deadline)
             {
@@ -606,16 +939,21 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                 afterPlay = await ProbeAsync(cancellationToken).ConfigureAwait(false);
                 if (TrackMatches(afterPlay.Current, track))
                 {
+                    _nextGuard.Cancel(
+                        $"立即播放已正确命中：{track.DisplayName}");
                     return new PlayerOperationResult(
                         OperationOutcome.Verified,
-                        $"已观察到酷狗播放目标歌曲：{track.DisplayName}",
+                        $"酷狗已先插入下一首，再切换并播放目标：{track.DisplayName}",
                         afterPlay);
                 }
             }
 
             return new PlayerOperationResult(
                 OperationOutcome.Indeterminate,
-                "酷狗已接受点歌 IPC，但没有在等待窗口内观察到目标；未执行 Stop 或强制恢复。",
+                "酷狗已插入目标并发送下一首，但没有在等待窗口内确认目标；"
+                + (guardArmed
+                    ? "兜底守卫会继续检查实际切歌结果。"
+                    : "当前歌曲不可识别，兜底守卫未启动。"),
                 afterPlay);
         }
         finally
@@ -666,35 +1004,51 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         PlayerTrack target,
         CancellationToken cancellationToken)
     {
-        var stopped = await Task.Run(
-            () => KugouNativeController.SendDirectKugouCommand(
-                KugouAppCommand.Stop,
-                TimeSpan.Zero),
-            cancellationToken).ConfigureAwait(false);
-        if (!stopped.Sent)
-        {
-            return "下一首接管失败：酷狗没有接受停止命令；"
-                   + (stopped.Error ?? "未知错误");
-        }
-
         var endpoint = FindValidatedIpcEndpoint();
         if (endpoint is null)
         {
-            return "已停止错误歌曲，但酷狗点歌 IPC 当前不可用。";
+            return "检测到错误歌曲，但酷狗点歌 IPC 当前不可用。";
         }
 
-        var payload = BuildOnlinePayload(
-            target.NativeData,
-            playImmediately: true);
+        var payload = BuildInsertNextPayload(target.NativeData);
         var delivery = await Task.Run(
             () => KugouCopyDataTransport.Send(
                 endpoint.Value.Handle,
                 payload,
                 data: 20),
             cancellationToken).ConfigureAwait(false);
-        return delivery.Accepted
-            ? $"已停止错误歌曲并切换目标：{target.DisplayName}"
-            : $"已停止错误歌曲，但目标播放失败：{delivery.Message}";
+        if (!delivery.Accepted)
+        {
+            return $"检测到错误歌曲，但重新插入目标失败：{delivery.Message}";
+        }
+
+        await Task.Delay(60, cancellationToken).ConfigureAwait(false);
+        var advance = await Task.Run(
+            () => KugouNativeController.SendDirectKugouCommand(
+                KugouAppCommand.NextTrack,
+                TimeSpan.FromSeconds(6)),
+            cancellationToken).ConfigureAwait(false);
+        if (!advance.Sent)
+        {
+            return "已重新插入目标为下一首，但酷狗没有接受下一首命令："
+                   + (advance.Error ?? "未知错误");
+        }
+
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = await ReadCurrentForGuardAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (TrackMatches(current, target))
+            {
+                return $"已重新插入目标并切换成功：{target.DisplayName}";
+            }
+
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+        }
+
+        return $"已重新插入目标并发送下一首，但尚未确认命中：{target.DisplayName}";
     }
 
     private static (int ProcessId, string Version)? FindTarget()
@@ -782,6 +1136,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             string.Empty,
             state.Hash);
         var known = FindKnownTrack(id, state.Hash);
+        known ??= FindKnownTrackByMetadata(fallback);
         if (known is not null)
         {
             return known;
@@ -806,6 +1161,16 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }
 
         return null;
+    }
+
+    private PlayerTrack? FindKnownTrackByMetadata(PlayerTrack current)
+    {
+        lock (_trackSync)
+        {
+            return _knownTracks.Values
+                .Distinct()
+                .FirstOrDefault(candidate => TrackMatches(current, candidate));
+        }
     }
 
     private void RememberTrack(PlayerTrack track, params string[] identities)
@@ -911,9 +1276,25 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             return true;
         }
 
-        return Normalize(actual.Title) == Normalize(expected.Title)
+        var actualTitle = NormalizeTrackText(actual.Title);
+        var expectedTitle = NormalizeTrackText(expected.Title);
+        var titleMatches = actualTitle == expectedTitle
+            || (expectedTitle.Length >= 4
+                && actualTitle.StartsWith(
+                    expectedTitle,
+                    StringComparison.Ordinal));
+        return titleMatches
             && (string.IsNullOrWhiteSpace(expected.Artist)
-                || Normalize(actual.Artist) == Normalize(expected.Artist));
+                || NormalizeTrackText(actual.Artist)
+                    == NormalizeTrackText(expected.Artist));
+    }
+
+    private static string NormalizeTrackText(string value)
+    {
+        return string.Concat(
+            value.Normalize(NormalizationForm.FormKC)
+                .Where(char.IsLetterOrDigit))
+            .ToUpperInvariant();
     }
 
     private static string Normalize(string value)
@@ -940,11 +1321,17 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             coverUrl = ReadJsonTextAny(
                 song,
                 "album_cover",
-                "AlbumImage");
+                "AlbumImage",
+                "album_img");
         }
         if (string.IsNullOrWhiteSpace(coverUrl))
         {
-            coverUrl = ReadJsonTextAny(song, "img", "Image");
+            coverUrl = ReadJsonTextAny(
+                song,
+                "img",
+                "Image",
+                "imgUrl",
+                "imgurl");
         }
         if (string.IsNullOrWhiteSpace(coverUrl))
         {
@@ -966,9 +1353,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             : coverUrl;
     }
 
-    private static string BuildOnlinePayload(
-        string rawSongJson,
-        bool playImmediately)
+    private static string BuildInsertNextPayload(string rawSongJson)
     {
         using var document = JsonDocument.Parse(rawSongJson);
         var song = document.RootElement;
@@ -1032,11 +1417,11 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             ["NoPlayAds"] = 1,
             ["QueueInfo"] = new Dictionary<string, string>
             {
-                ["Play"] = playImmediately ? "1" : "0",
+                ["Play"] = "0",
                 ["PlayAll"] = "0",
                 ["Clear"] = "0",
-                ["Insert"] = playImmediately ? "0" : "1",
-                ["Force"] = playImmediately ? "1" : "0",
+                ["Insert"] = "1",
+                ["Force"] = "0",
                 ["IsMV"] = "0",
                 ["Index"] = "0",
                 ["AddToDefaultList"] = "1",

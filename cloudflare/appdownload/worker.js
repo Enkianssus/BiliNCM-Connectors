@@ -80,6 +80,43 @@ export default {
       return updateFeedback(request, adminFeedback[1], env);
     }
 
+    if (
+      url.pathname === '/api/v1/compatibility-reports'
+      && request.method === 'POST'
+    ) {
+      return createCompatibilityReport(request, env);
+    }
+
+    if (
+      url.pathname === '/api/v1/admin/compatibility-reports'
+      && request.method === 'GET'
+    ) {
+      return listCompatibilityReports(request, env);
+    }
+
+    if (url.pathname === '/connectors/v1/profiles/qqmusic/catalog.json') {
+      return proxyQqMusicProfileCatalog(request);
+    }
+
+    const qqMusicProfileDownload = url.pathname.match(
+      /^\/connectors\/v1\/profiles\/qqmusic\/download\/([0-9]+\.[0-9]+\.[0-9]+)\/([^/]+)$/
+    );
+    if (qqMusicProfileDownload) {
+      const [, version, assetName] = qqMusicProfileDownload;
+      if (assetName !== `bilincm-qqmusic-profiles-${version}.zip`) {
+        return jsonResponse({ error: 'Invalid profile asset.' }, 400);
+      }
+      return proxyGitHub(
+        request,
+        `https://github.com/${CONNECTOR_REPO}/releases/download/`
+          + `qqmusic-profiles-v${version}/${assetName}`,
+        {
+          downloadName: assetName,
+          cacheControl: 'public, max-age=31536000, immutable'
+        }
+      );
+    }
+
     if (url.pathname === '/connectors/v1/catalog.json') {
       return proxyCatalog(request);
     }
@@ -428,6 +465,168 @@ async function requireFeedbackAdmin(request, env) {
   return null;
 }
 
+async function createCompatibilityReport(request, env) {
+  if (!env.FEEDBACK_DB) {
+    return jsonResponse({ error: 'Compatibility database is unavailable.' }, 503);
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(request, 64 * 1024);
+  } catch (error) {
+    return jsonResponse({ error: String(error.message || error) }, 400);
+  }
+
+  const player = cleanText(body.player, 30).toLowerCase();
+  const playerVersion = cleanText(body.playerVersion, 80);
+  const connectorVersion = cleanText(body.connectorVersion, 40);
+  const architecture = cleanText(body.architecture, 20);
+  const clientSha256 = cleanText(body.clientSha256, 64).toUpperCase();
+  const commonSha256 = cleanText(body.commonSha256, 64).toUpperCase();
+  const shaPattern = /^[0-9A-F]{64}$/;
+  if (
+    body.schemaVersion !== 1
+    || player !== 'qqmusic'
+    || !playerVersion
+    || !shaPattern.test(clientSha256)
+    || !shaPattern.test(commonSha256)
+  ) {
+    return jsonResponse({ error: 'Invalid compatibility report.' }, 400);
+  }
+
+  const checks = Array.isArray(body.checks)
+    ? body.checks.slice(0, 64).map(item => ({
+        name: cleanText(item?.name, 80),
+        required: Boolean(item?.required),
+        passed: Boolean(item?.passed),
+        detail: cleanText(item?.detail, 600)
+      }))
+    : [];
+  const candidates = Array.isArray(body.candidates)
+    ? body.candidates.slice(0, 32).map(item => ({
+        name: cleanText(item?.name, 80),
+        rvas: Array.isArray(item?.rvas)
+          ? item.rvas.slice(0, 64).map(value => cleanText(value, 24))
+          : [],
+        evidence: cleanText(item?.evidence, 600)
+      }))
+    : [];
+  const diagnosticsJson = JSON.stringify({ checks, candidates });
+  if (new TextEncoder().encode(diagnosticsJson).length > 48 * 1024) {
+    return jsonResponse({ error: 'Compatibility diagnostics are too large.' }, 400);
+  }
+
+  const now = new Date().toISOString();
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const ipHash = await sha256Hex(
+    `${env.FEEDBACK_IP_SALT || 'feedback-v1'}\ncompatibility\n`
+      + `${now.slice(0, 10)}\n${ip}`
+  );
+  const rate = await env.FEEDBACK_DB.prepare(
+    `SELECT COALESCE(SUM(reports_count), 0) AS count
+       FROM compatibility_reports
+      WHERE ip_hash = ? AND last_seen_at >= ?`
+  ).bind(ipHash, `${now.slice(0, 10)}T00:00:00.000Z`).first();
+  if (Number(rate?.count || 0) >= 30) {
+    return jsonResponse({ error: 'Too many compatibility reports today.' }, 429);
+  }
+
+  const fingerprint = await sha256Hex(
+    `${player}\n${playerVersion}\n${clientSha256}\n${commonSha256}`
+  );
+  const id = crypto.randomUUID();
+  await env.FEEDBACK_DB.prepare(
+    `INSERT INTO compatibility_reports (
+       id, fingerprint, first_seen_at, last_seen_at, reports_count,
+       player, player_version, connector_version, architecture,
+       client_sha256, common_sha256, known_profile_matched,
+       execution_allowed, summary, diagnostics_json, country,
+       ip_hash, user_agent
+     ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(fingerprint) DO UPDATE SET
+       last_seen_at = excluded.last_seen_at,
+       reports_count = compatibility_reports.reports_count + 1,
+       connector_version = excluded.connector_version,
+       architecture = excluded.architecture,
+       known_profile_matched = excluded.known_profile_matched,
+       execution_allowed = excluded.execution_allowed,
+       summary = excluded.summary,
+       diagnostics_json = excluded.diagnostics_json,
+       country = excluded.country,
+       ip_hash = excluded.ip_hash,
+       user_agent = excluded.user_agent`
+  ).bind(
+    id,
+    fingerprint,
+    now,
+    now,
+    player,
+    playerVersion,
+    connectorVersion,
+    architecture,
+    clientSha256,
+    commonSha256,
+    body.knownProfileMatched ? 1 : 0,
+    body.executionAllowed ? 1 : 0,
+    cleanText(body.summary, 1000),
+    diagnosticsJson,
+    cleanText(request.cf?.country || '', 8),
+    ipHash,
+    cleanText(request.headers.get('User-Agent') || '', 300)
+  ).run();
+
+  return jsonResponse({
+    success: true,
+    fingerprint,
+    acceptedAt: now
+  }, 202);
+}
+
+async function listCompatibilityReports(request, env) {
+  const unauthorized = await requireFeedbackAdmin(request, env);
+  if (unauthorized) return unauthorized;
+  if (!env.FEEDBACK_DB) {
+    return jsonResponse({ error: 'Compatibility database is unavailable.' }, 503);
+  }
+
+  const url = new URL(request.url);
+  const limit = Math.min(
+    200,
+    Math.max(1, Number(url.searchParams.get('limit')) || 100)
+  );
+  const result = await env.FEEDBACK_DB.prepare(
+    `SELECT id, fingerprint, first_seen_at, last_seen_at, reports_count,
+            player, player_version, connector_version, architecture,
+            client_sha256, common_sha256, known_profile_matched,
+            execution_allowed, summary, diagnostics_json, country,
+            user_agent
+       FROM compatibility_reports
+      ORDER BY last_seen_at DESC LIMIT ?`
+  ).bind(limit).all();
+  return jsonResponse({
+    success: true,
+    items: (result.results || []).map(row => ({
+      id: row.id,
+      fingerprint: row.fingerprint,
+      firstSeenAt: row.first_seen_at,
+      lastSeenAt: row.last_seen_at,
+      reportsCount: row.reports_count,
+      player: row.player,
+      playerVersion: row.player_version,
+      connectorVersion: row.connector_version,
+      architecture: row.architecture,
+      clientSha256: row.client_sha256,
+      commonSha256: row.common_sha256,
+      knownProfileMatched: Boolean(row.known_profile_matched),
+      executionAllowed: Boolean(row.execution_allowed),
+      summary: row.summary,
+      diagnostics: safeParseJson(row.diagnostics_json, {}),
+      country: row.country,
+      userAgent: row.user_agent
+    }))
+  });
+}
+
 async function readJsonBody(request, maximumBytes) {
   const declared = Number(request.headers.get('Content-Length') || 0);
   if (declared > maximumBytes) {
@@ -494,6 +693,14 @@ function cleanEnum(value, allowed, fallback) {
   return allowed.includes(value) ? value : fallback;
 }
 
+function safeParseJson(value, fallback) {
+  try {
+    return JSON.parse(String(value || ''));
+  } catch {
+    return fallback;
+  }
+}
+
 function makePublicFeedbackId(now) {
   const date = now.slice(0, 10).replaceAll('-', '');
   const random = crypto.randomUUID()
@@ -529,6 +736,27 @@ async function proxyCatalog(request) {
     }
   );
 
+  return copyProxyResponse(response, {
+    contentType: 'application/json; charset=utf-8',
+    cacheControl: 'public, max-age=300'
+  });
+}
+
+async function proxyQqMusicProfileCatalog(request) {
+  const response = await fetch(
+    `https://raw.githubusercontent.com/${CONNECTOR_REPO}/main/qqmusic-profile-catalog.json`,
+    {
+      method: request.method === 'HEAD' ? 'HEAD' : 'GET',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'BiliNCM-QQMusic-Profile-Catalog/1.0'
+      },
+      cf: {
+        cacheEverything: true,
+        cacheTtl: 300
+      }
+    }
+  );
   return copyProxyResponse(response, {
     contentType: 'application/json; charset=utf-8',
     cacheControl: 'public, max-age=300'
@@ -834,9 +1062,11 @@ function renderHome(host) {
       <section class="card">
         <h2>嗷呜点歌机播放器连接器</h2>
         <p>网易云音乐、酷狗音乐、QQ 音乐和 Folia 连接器独立更新，不需要同步升级嗷呜点歌机本体。</p>
+        <p>QQ 音乐兼容配置也可独立热更新；未知版本只上报版本号、DLL 哈希和兼容分析结果，不上传播放器文件、账号或播放记录。</p>
         <div class="endpoint">https://${host}/connectors/v1/catalog.json</div>
         <div class="actions" style="margin-top:16px">
           <a href="/connectors/v1/catalog.json">查看版本清单</a>
+          <a href="/connectors/v1/profiles/qqmusic/catalog.json">QQ 兼容配置</a>
           <a href="https://github.com/${CONNECTOR_REPO}">连接器源码</a>
           <a href="/feedback">提交问题反馈</a>
         </div>

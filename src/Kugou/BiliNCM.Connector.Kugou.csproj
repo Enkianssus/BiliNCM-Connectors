@@ -3,6 +3,8 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>BiliNCM.Connector.Kugou</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
+    <Version>1.5.0</Version>
+    <InformationalVersion>$(Version)</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -11,4 +13,3 @@
     <Compile Include="..\Shared\GuardedNextMonitor.cs" Link="Shared\GuardedNextMonitor.cs" />
   </ItemGroup>
 </Project>
-

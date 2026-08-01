@@ -1,0 +1,88 @@
+name: Release QQ Music profiles
+
+on:
+  push:
+    tags:
+      - 'qqmusic-profiles-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: connector-catalog
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+
+      - name: Resolve profile metadata
+        id: metadata
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^qqmusic-profiles-v([0-9]+\.[0-9]+\.[0-9]+)$') {
+            throw "Unsupported release tag: $tag"
+          }
+          $version = $Matches[1]
+          $asset = "bilincm-qqmusic-profiles-$version.zip"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "asset=$asset" >> $env:GITHUB_OUTPUT
+
+      - name: Build profile pack
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/profiles | Out-Null
+          Copy-Item profiles/qqmusic/*.json artifacts/profiles/
+          Compress-Archive `
+            -Path artifacts/profiles/* `
+            -DestinationPath "artifacts/${{ steps.metadata.outputs.asset }}" `
+            -CompressionLevel Optimal
+
+      - name: Sign profile pack
+        id: signing
+        shell: pwsh
+        env:
+          CONNECTOR_SIGNING_PRIVATE_KEY: ${{ secrets.CONNECTOR_SIGNING_PRIVATE_KEY }}
+        run: |
+          $asset = "artifacts/${{ steps.metadata.outputs.asset }}"
+          $result = node scripts/sign-release.mjs "$asset" | ConvertFrom-Json
+          "sha256=$($result.sha256)" >> $env:GITHUB_OUTPUT
+          "signature=$($result.signature)" >> $env:GITHUB_OUTPUT
+          "size=$($result.size)" >> $env:GITHUB_OUTPUT
+          $result.signature | Set-Content -NoNewline "$asset.sig"
+          $result.sha256 | Set-Content -NoNewline "$asset.sha256"
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $asset = "artifacts/${{ steps.metadata.outputs.asset }}"
+          gh release create "${{ github.ref_name }}" `
+            "$asset" `
+            "$asset.sig" `
+            "$asset.sha256" `
+            --title "QQ Music compatibility profiles v${{ steps.metadata.outputs.version }}" `
+            --notes "Signed QQ Music compatibility profiles. No player binaries or user data are included."
+
+      - name: Update profile catalog
+        shell: pwsh
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+          node scripts/update-profile-catalog.mjs `
+            "${{ steps.metadata.outputs.version }}" `
+            "${{ steps.metadata.outputs.asset }}" `
+            "${{ steps.signing.outputs.sha256 }}" `
+            "${{ steps.signing.outputs.signature }}" `
+            "${{ steps.signing.outputs.size }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add qqmusic-profile-catalog.json
+          git commit -m "Update QQ Music profile catalog"
+          git push origin main

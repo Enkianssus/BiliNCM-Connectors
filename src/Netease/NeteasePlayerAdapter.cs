@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace UnifiedPlayerControlPoc;
 
@@ -92,9 +93,40 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        var trimmedQuery = query.Trim();
+        var idMatch = Regex.Match(
+            trimmedQuery,
+            "^(?:id\\s*=\\s*)?([0-9]+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!idMatch.Success)
+        {
+            return await SearchByKeywordAsync(
+                trimmedQuery,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var songId = idMatch.Groups[1].Value;
+        var keywordTask = SearchByKeywordAsync(songId, cancellationToken);
+        var exactTrack = await TryResolveSongIdAsync(
+            songId,
+            cancellationToken).ConfigureAwait(false);
+        if (exactTrack is not null)
+        {
+            _ = ObserveBackgroundTaskAsync(keywordTask);
+            RegisterKnownTrack(exactTrack);
+            return [exactTrack];
+        }
+
+        return await keywordTask.ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<PlayerTrack>> SearchByKeywordAsync(
+        string query,
+        CancellationToken cancellationToken)
+    {
         using var content = new FormUrlEncodedContent(
         [
-            new KeyValuePair<string, string>("s", query.Trim()),
+            new KeyValuePair<string, string>("s", query),
             new KeyValuePair<string, string>("type", "1"),
             new KeyValuePair<string, string>("limit", "20"),
             new KeyValuePair<string, string>("offset", "0")
@@ -128,6 +160,88 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         }
 
         return tracks;
+    }
+
+    private async Task<PlayerTrack?> TryResolveSongIdAsync(
+        string songId,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                "https://music.163.com/api/song/detail/"
+                + $"?id={Uri.EscapeDataString(songId)}"
+                + $"&ids={Uri.EscapeDataString($"[{songId}]")}");
+            request.Headers.Referrer = new Uri("https://music.163.com/");
+            request.Headers.TryAddWithoutValidation(
+                "X-Real-IP",
+                "111.206.176.1");
+            request.Headers.TryAddWithoutValidation(
+                "X-Forwarded-For",
+                "111.206.176.1");
+            using var response = await _httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                timeout.Token).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(
+                timeout.Token).ConfigureAwait(false);
+            using var document = await JsonDocument.ParseAsync(
+                stream,
+                cancellationToken: timeout.Token).ConfigureAwait(false);
+            if (!document.RootElement.TryGetProperty("songs", out var songs)
+                || songs.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            foreach (var song in songs.EnumerateArray())
+            {
+                if (ReadJsonText(song, "id") != songId)
+                {
+                    continue;
+                }
+
+                var track = ParseSearchTrack(song);
+                return string.IsNullOrWhiteSpace(track.Title)
+                    ? null
+                    : track;
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private static async Task ObserveBackgroundTaskAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The exact ID result has already completed successfully.
+        }
     }
 
     public async Task<PlayerOperationResult> ExecuteAsync(
@@ -630,7 +744,9 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
                 id,
                 name,
                 ReadArtists(track),
-                ReadAlbum(track));
+                ReadAlbum(track),
+                "",
+                ReadCover(track));
             var displayOrder = item.TryGetProperty(
                     "displayOrder",
                     out var orderValue)
@@ -651,7 +767,9 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
             ReadJsonText(song, "id"),
             ReadJsonText(song, "name"),
             ReadArtists(song),
-            ReadAlbum(song));
+            ReadAlbum(song),
+            "",
+            ReadCover(song));
     }
 
     private static string ReadArtists(JsonElement track)
@@ -681,6 +799,36 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
                     && album.ValueKind == JsonValueKind.Object))
             ? ReadJsonText(album, "name")
             : string.Empty;
+    }
+
+    private static string ReadCover(JsonElement track)
+    {
+        JsonElement album;
+        if ((!track.TryGetProperty("album", out album)
+             || album.ValueKind != JsonValueKind.Object)
+            && (!track.TryGetProperty("al", out album)
+                || album.ValueKind != JsonValueKind.Object))
+        {
+            return string.Empty;
+        }
+
+        var cover = ReadJsonText(album, "picUrl");
+        if (string.IsNullOrWhiteSpace(cover))
+        {
+            cover = ReadJsonText(album, "blurPicUrl");
+        }
+        if (string.IsNullOrWhiteSpace(cover))
+        {
+            cover = ReadJsonText(album, "coverUrl");
+        }
+        if (string.IsNullOrWhiteSpace(cover))
+        {
+            cover = ReadJsonText(album, "cover");
+        }
+
+        return cover.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            ? $"https://{cover[7..]}"
+            : cover;
     }
 
     private static string ReadJsonText(

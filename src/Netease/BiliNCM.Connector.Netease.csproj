@@ -3,6 +3,8 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>BiliNCM.Connector.Netease</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
+    <Version>1.2.0</Version>
+    <InformationalVersion>$(Version)</InformationalVersion>
     <PlatformTarget>x64</PlatformTarget>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
