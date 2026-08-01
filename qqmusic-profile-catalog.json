@@ -1,9 +1,20 @@
 {
   "schemaVersion": 1,
-  "generatedAt": null,
+  "generatedAt": "2026-08-01T09:40:19.956Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "profiles": {
-    "qqmusic": null
+    "qqmusic": {
+      "id": "qqmusic",
+      "version": "1.0.0",
+      "schemaVersion": 1,
+      "minimumConnectorVersion": "1.4.0",
+      "asset": "bilincm-qqmusic-profiles-1.0.0.zip",
+      "size": 1135,
+      "sha256": "f5a4f3e9c905d149a5f4ee6f164e2fe6f1282c8c2390105554973b3ecb97ecb2",
+      "signature": "zHKrF14vJlUWC858xZcJnoMAVVwFZkfVXZaz+nIqnJ6EVIF8Qx7AEwEo3nASnQTfCHS2JDWxqTFgPiFtG515Dw==",
+      "publishedAt": "2026-08-01T09:40:19.956Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/profiles/qqmusic/download/1.0.0/bilincm-qqmusic-profiles-1.0.0.zip"
+    }
   }
 }
