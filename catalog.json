@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-02T15:36:40.300Z",
+  "generatedAt": "2026-08-02T15:38:33.648Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -42,18 +42,18 @@
       "id": "qqmusic",
       "name": "QQ音乐",
       "channel": "stable",
-      "version": "1.4.0",
+      "version": "22.41.4",
       "protocolVersion": 1,
       "minimumCoreVersion": "1.1.0",
       "playerVersionPolicy": "22.*",
       "testedPlayerVersion": "22.22 / 22.41",
       "runtime": "win-x86",
-      "asset": "bilincm-connector-qqmusic-1.4.0-win-x86.zip",
-      "size": 34689097,
-      "sha256": "faa54f067111f2df4354e487dfccd4c9b0b9f98a116e891536d93b4f527476f0",
-      "signature": "3CAwcFHFdziRQBiMotT4Nkzp/LqDXXv6elkWrT0k9Mx/ltbZmhuMI2FIefeHfrpm3Qnc65gz/uml4pdbFYi/Cg==",
-      "publishedAt": "2026-08-01T09:45:36.864Z",
-      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/1.4.0/bilincm-connector-qqmusic-1.4.0-win-x86.zip"
+      "asset": "bilincm-connector-qqmusic-22.41.4-win-x86.zip",
+      "size": 34710080,
+      "sha256": "6e8b3900e15f3b631cac9689f3442711378260d1f702585c8fe25d040bc7e067",
+      "signature": "JHzD9F6qMcev3mwlwxr9+AJam5cme3NoMn16DFfejrmGDqVQ/s1tx2H9y2aMaJuz7BCw4kzYG3zpR9MFsCz1BA==",
+      "publishedAt": "2026-08-02T15:38:33.648Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.41.4/bilincm-connector-qqmusic-22.41.4-win-x86.zip"
     },
     "folia": {
       "id": "folia",
