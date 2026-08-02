@@ -84,6 +84,9 @@ jobs:
             -Force `
             '.tmp/cef-4472-source/include' `
             "$cefRoot/include"
+          if (-not (Test-Path "$cefRoot/include/cef_browser.h")) {
+            throw 'Pinned CEF checkout did not contain include/cef_browser.h.'
+          }
 
           $netBase = "$cefRoot/net/base"
           New-Item -ItemType Directory -Force $netBase | Out-Null
