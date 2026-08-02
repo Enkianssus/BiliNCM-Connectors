@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-02T15:35:00.649Z",
+  "generatedAt": "2026-08-02T15:36:40.300Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -25,18 +25,18 @@
       "id": "kugou",
       "name": "酷狗音乐",
       "channel": "stable",
-      "version": "1.5.0",
+      "version": "20.0.81.3",
       "protocolVersion": 1,
       "minimumCoreVersion": "1.1.0",
       "playerVersionPolicy": "20.*",
       "testedPlayerVersion": "20.0.81.27563",
       "runtime": "win-x86",
-      "asset": "bilincm-connector-kugou-1.5.0-win-x86.zip",
-      "size": 34680923,
-      "sha256": "3fdf137ff9db09ebcaf636b6cfbd0018b81cebfd1e6ea831e86fa37642df3cfc",
-      "signature": "J2EXrmMr4DFiiBBsp6ExT9JXoEbJ6HiPel348gbEl6RDJEVOR8P7nKWE6iYD9uQMs7eUHsymQ/MOz+nhYePpDg==",
-      "publishedAt": "2026-08-01T09:44:13.423Z",
-      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/kugou/1.5.0/bilincm-connector-kugou-1.5.0-win-x86.zip"
+      "asset": "bilincm-connector-kugou-20.0.81.3-win-x86.zip",
+      "size": 34708054,
+      "sha256": "d9ee6d6054c2e83465cf4991116cb4e1832206794cc5db379b4f40461cf42813",
+      "signature": "bcnShLH+Z8YngdmMTOEodI1RrmuTmL+vTFSj0w4oiQ6E0QdT/rxsCkT9darA/ZulHgNBjP410b3P8j91ds7PDw==",
+      "publishedAt": "2026-08-02T15:36:40.300Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/kugou/20.0.81.3/bilincm-connector-kugou-20.0.81.3-win-x86.zip"
     },
     "qqmusic": {
       "id": "qqmusic",
