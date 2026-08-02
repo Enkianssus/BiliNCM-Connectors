@@ -122,13 +122,14 @@ export default {
     }
 
     const connectorDownload = url.pathname.match(
-      /^\/connectors\/v1\/download\/(netease|kugou|qqmusic|folia)\/([0-9]+\.[0-9]+\.[0-9]+)\/([^/]+)$/
+      /^\/connectors\/v1\/download\/(netease|kugou|qqmusic|folia)\/([0-9]+(?:\.[0-9]+){2,4})\/([^/]+)$/
     );
     if (connectorDownload) {
       const [, connectorId, version, assetName] = connectorDownload;
-      const validAsset = new RegExp(
-        `^bilincm-connector-${connectorId}-${version}-win-x(86|64)\\.zip$`
-      ).test(assetName);
+      const assetPrefix =
+        `bilincm-connector-${connectorId}-${version}-win-x`;
+      const validAsset = assetName === `${assetPrefix}86.zip`
+        || assetName === `${assetPrefix}64.zip`;
       if (!CONNECTOR_IDS.has(connectorId) || !validAsset) {
         return jsonResponse(
           { error: 'Invalid connector asset.' },
