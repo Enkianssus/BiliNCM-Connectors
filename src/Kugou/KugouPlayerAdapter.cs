@@ -12,21 +12,46 @@ namespace UnifiedPlayerControlPoc;
 
 internal sealed class KugouPlayerAdapter : IPlayerAdapter
 {
+    private const string AllowHttpSearchFallbackEnvironmentVariable =
+        "BILINCM_KUGOU_ALLOW_HTTP_SEARCH_FALLBACK";
+
     private readonly HttpClient _httpClient = new()
     {
         Timeout = TimeSpan.FromSeconds(10)
     };
+    private readonly bool _allowHttpSearchFallback;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
-    private readonly GuardedNextMonitor _nextGuard = new();
+    private readonly KugouEventMonitor _eventMonitor = new();
+    private readonly KugouGuardedNextMonitor _nextGuard;
+    private readonly object _pendingNextSync = new();
     private readonly object _trackSync = new();
     private readonly Dictionary<string, PlayerTrack> _knownTracks =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _artworkLookups =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _artworkRetryAfter =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<string> _artworkLookupOrder = new();
     private readonly List<Task> _artworkTasks = [];
     private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private PendingKugouNext? _pendingNext;
+    private DateTimeOffset? _pendingTargetObservedAt;
     private volatile bool _httpSearchFallbackUsed;
+    private volatile string _httpSearchStatus =
+        "搜索仅使用 HTTPS；明文 HTTP 回退未启用";
+    private volatile string _anchorResetStatus = string.Empty;
+
+    public KugouPlayerAdapter()
+    {
+        _nextGuard = new KugouGuardedNextMonitor(
+            _eventMonitor,
+            () => _eventMonitor.NotifySnapshotInvalidated());
+        _allowHttpSearchFallback = IsEnvironmentVariableEnabled(
+            AllowHttpSearchFallbackEnvironmentVariable);
+        _httpSearchStatus = _allowHttpSearchFallback
+            ? $"搜索优先使用 HTTPS；已显式启用明文 HTTP 兼容回退（{AllowHttpSearchFallbackEnvironmentVariable}=1）"
+            : $"搜索仅使用 HTTPS；明文 HTTP 回退已禁用（设置 {AllowHttpSearchFallbackEnvironmentVariable}=1 可显式启用）";
+    }
 
     public string Key => "kugou";
 
@@ -43,7 +68,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         Toggle: true,
         Next: true,
         InsertNext: true,
-        InsertNextLevel: "原生插入 + 错误下一首重新插入并切换守卫");
+        InsertNextLevel: "原生插入 + 上一首重置锚点的有界兜底");
 
     public async Task<PlayerSnapshot> ProbeAsync(
         CancellationToken cancellationToken)
@@ -56,7 +81,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                 DisplayName,
                 null,
                 string.Empty,
-                "未连接：没有发现可见酷狗主窗口",
+                "未连接：没有发现酷狗主窗口",
                 null,
                 DateTimeOffset.Now);
         }
@@ -66,6 +91,8 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             await KugouNativeController.ReadPlaybackStateWithIdentityAsync(
                 cancellationToken).ConfigureAwait(false);
         var current = ResolveCurrentTrack(state);
+        ClearPendingNextIfPlaying(current);
+        var pendingNext = GetPendingNextTrack();
         return new PlayerSnapshot(
             true,
             DisplayName,
@@ -75,13 +102,20 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                 ? "控制窗口已连接；在线点歌 IPC 未通过进程/窗口类校验"
                 : $"控制及在线点歌 IPC 已连接（{state.Source}）"
                   + (_httpSearchFallbackUsed
-                      ? "；搜索使用 HTTP 兼容回退"
-                      : string.Empty)
-                  + (string.IsNullOrWhiteSpace(_nextGuard.Status)
-                      ? string.Empty
-                      : $"；{_nextGuard.Status}"),
+                      ? $"；搜索使用明文 HTTP 兼容回退（{AllowHttpSearchFallbackEnvironmentVariable}=1）"
+                      : $"；{_httpSearchStatus}")
+                   + (string.IsNullOrWhiteSpace(_nextGuard.Status)
+                       ? string.Empty
+                       : $"；{_nextGuard.Status}")
+                   + (string.IsNullOrWhiteSpace(_anchorResetStatus)
+                       ? string.Empty
+                       : $"；{_anchorResetStatus}"),
             current,
-            DateTimeOffset.Now);
+            DateTimeOffset.Now,
+            pendingNext,
+            pendingNext is null
+                ? string.Empty
+                : "KuGou native InsertNext transaction");
     }
 
     public async Task<IReadOnlyList<PlayerTrack>> SearchAsync(
@@ -89,34 +123,20 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
-        var trimmedQuery = query.Trim();
-        var hasPermanentChain = TryExtractPermanentShareChain(
-            trimmedQuery,
-            out var permanentChain);
-        var hasTemporaryCode = TryExtractTemporaryKugouCode(
-            trimmedQuery,
-            out var temporaryCode);
-        var keywordQuery = hasPermanentChain
-            ? permanentChain
-            : hasTemporaryCode
-                ? temporaryCode
-            : trimmedQuery;
+        var classified = SongQueryPolicy.ParseKugou(query);
         var keywordTask = SearchByKeywordAsync(
-            keywordQuery,
+            classified.Value,
             cancellationToken);
-        Task<IReadOnlyList<PlayerTrack>>? exactTask = null;
-        if (hasPermanentChain)
+        Task<IReadOnlyList<PlayerTrack>>? exactTask = classified.Kind switch
         {
-            exactTask = TryResolvePermanentShareChainAsync(
-                permanentChain,
-                cancellationToken);
-        }
-        else if (hasTemporaryCode)
-        {
-            exactTask = TryResolveKugouCodeAsync(
-                temporaryCode,
-                cancellationToken);
-        }
+            KugouSongQueryKind.Chain => TryResolvePermanentShareChainAsync(
+                classified.Value,
+                cancellationToken),
+            KugouSongQueryKind.ShareCode => TryResolveKugouCodeAsync(
+                classified.Value,
+                cancellationToken),
+            _ => null
+        };
 
         if (exactTask is null)
         {
@@ -131,53 +151,6 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }
 
         return await keywordTask.ConfigureAwait(false);
-    }
-
-    private static bool TryExtractPermanentShareChain(
-        string query,
-        out string chain)
-    {
-        chain = string.Empty;
-        var match = Regex.Match(
-            query,
-            "(?:^|[?&])chain=([A-Za-z0-9_-]{6,32})(?:$|[&#])",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (match.Success)
-        {
-            chain = match.Groups[1].Value;
-            return true;
-        }
-
-        if (Regex.IsMatch(
-                query,
-                "^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9_-]{8,32}$",
-                RegexOptions.CultureInvariant))
-        {
-            chain = query;
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool TryExtractTemporaryKugouCode(
-        string query,
-        out string code)
-    {
-        code = string.Empty;
-        var match = Regex.Match(
-            query,
-            "^(?:#([0-9]+)#|([0-9]+))$",
-            RegexOptions.CultureInvariant);
-        if (!match.Success)
-        {
-            return false;
-        }
-
-        code = match.Groups[1].Success
-            ? match.Groups[1].Value
-            : match.Groups[2].Value;
-        return code.Length > 0;
     }
 
     private async Task<IReadOnlyList<PlayerTrack>>
@@ -258,47 +231,81 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             + "?format=json"
             + $"&keyword={Uri.EscapeDataString(query)}"
             + "&page=1&pagesize=20&showtype=1";
-        using var response = await GetSearchResponseAsync(
+        var secure = await TryGetSecureSearchResponseAsync(
             queryString,
             cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync(
-            cancellationToken).ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(
-            stream,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (!document.RootElement.TryGetProperty("data", out var data)
-            || !data.TryGetProperty("info", out var info)
-            || info.ValueKind != JsonValueKind.Array)
+        var secureFailure = secure.Failure;
+        Exception? secureException = secure.Exception;
+        if (secure.Response is not null)
         {
-            return [];
-        }
-
-        var results = new List<PlayerTrack>();
-        foreach (var song in info.EnumerateArray())
-        {
-            var hash = ReadJsonText(song, "hash").ToUpperInvariant();
-            var audioId = ReadJsonLong(song, "audio_id");
-            var title = ReadJsonText(song, "songname");
-            var artist = ReadJsonText(song, "singername");
-            if (string.IsNullOrWhiteSpace(hash)
-                || string.IsNullOrWhiteSpace(title))
+            using var response = secure.Response;
+            try
             {
-                continue;
-            }
+                var parsed = await ParseMobileSearchResponseAsync(
+                    response,
+                    cancellationToken).ConfigureAwait(false);
+                if (parsed.Recognized)
+                {
+                    _httpSearchFallbackUsed = false;
+                    _httpSearchStatus = "搜索使用 HTTPS";
+                    return parsed.Results;
+                }
 
-            var track = new PlayerTrack(
-                audioId > 0 ? audioId.ToString() : hash,
-                title,
-                artist,
-                ReadJsonText(song, "album_name"),
-                song.GetRawText(),
-                GetCoverUrl(song));
-            results.Add(track);
-            RememberTrack(track, hash);
+                secureFailure = "HTTPS 响应缺少可解析搜索结果";
+            }
+            catch (JsonException exception)
+            {
+                secureFailure = $"HTTPS 响应解析失败（{exception.Message}）";
+                secureException = exception;
+            }
         }
 
-        return results;
+        var mixed = await TrySearchByMixedAsync(
+            query,
+            cancellationToken).ConfigureAwait(false);
+        if (mixed.Succeeded)
+        {
+            _httpSearchFallbackUsed = false;
+            _httpSearchStatus = "搜索使用 gateway.kugou.com HTTPS mixed 兼容路径";
+            return mixed.Results;
+        }
+
+        var mixedFailure = string.IsNullOrWhiteSpace(mixed.Failure)
+            ? "gateway HTTPS mixed 失败"
+            : mixed.Failure;
+        var fallbackException = secureException ?? mixed.Exception;
+        if (!_allowHttpSearchFallback)
+        {
+            _httpSearchFallbackUsed = false;
+            _httpSearchStatus = $"{secureFailure}；{mixedFailure}；"
+                + "已拒绝明文 HTTP 回退（设置 "
+                + $"{AllowHttpSearchFallbackEnvironmentVariable}=1 可显式启用）";
+            throw new HttpRequestException(
+                $"酷狗搜索的 HTTPS 接口不可用：{secureFailure}；{mixedFailure}。"
+                + "为保护搜索词，已拒绝明文 HTTP 回退。"
+                + $"如明确接受风险，请设置 {AllowHttpSearchFallbackEnvironmentVariable}=1 后重试。",
+                fallbackException);
+        }
+
+        _httpSearchFallbackUsed = true;
+        _httpSearchStatus = $"{secureFailure}；{mixedFailure}；正在使用已显式启用的明文 HTTP 兼容回退";
+        try
+        {
+            using var response = await _httpClient.GetAsync(
+                $"http://mobilecdn.kugou.com{queryString}",
+                cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var parsed = await ParseMobileSearchResponseAsync(
+                response,
+                cancellationToken).ConfigureAwait(false);
+            return parsed.Recognized ? parsed.Results : [];
+        }
+        catch (HttpRequestException exception)
+        {
+            _httpSearchStatus = $"{secureFailure}；{mixedFailure}；"
+                + $"明文 HTTP 兼容回退失败（{exception.Message}）";
+            throw;
+        }
     }
 
     private async Task<IReadOnlyList<PlayerTrack>> TryResolveKugouCodeAsync(
@@ -719,10 +726,14 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             Regex.Replace(value, "<[^>]+>", string.Empty)).Trim();
     }
 
-    private async Task<HttpResponseMessage> GetSearchResponseAsync(
+    private async Task<(
+        HttpResponseMessage? Response,
+        string Failure,
+        Exception? Exception)> TryGetSecureSearchResponseAsync(
         string queryString,
         CancellationToken cancellationToken)
     {
+        var secureFailure = "HTTPS 请求未返回成功响应";
         try
         {
             var secureResponse = await _httpClient.GetAsync(
@@ -730,23 +741,314 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                 cancellationToken).ConfigureAwait(false);
             if (secureResponse.IsSuccessStatusCode)
             {
-                _httpSearchFallbackUsed = false;
-                return secureResponse;
+                return (secureResponse, string.Empty, null);
             }
 
+            secureFailure = $"HTTPS 返回 {(int)secureResponse.StatusCode}"
+                + (string.IsNullOrWhiteSpace(secureResponse.ReasonPhrase)
+                    ? string.Empty
+                    : $" {secureResponse.ReasonPhrase}");
             secureResponse.Dispose();
+            return (null, secureFailure, null);
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException exception)
         {
-            // The legacy mobilecdn endpoint does not provide working TLS on
-            // every network. Fall back only for this public, credential-free
-            // catalog query; player control itself remains local IPC.
+            secureFailure = $"HTTPS 请求失败（{exception.Message}）";
+            return (null, secureFailure, exception);
+        }
+    }
+
+    private async Task<(
+        bool Recognized,
+        IReadOnlyList<PlayerTrack> Results)> ParseMobileSearchResponseAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync(
+            cancellationToken).ConfigureAwait(false);
+        using var document = await JsonDocument.ParseAsync(
+            stream,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (!document.RootElement.TryGetProperty("data", out var data)
+            || !data.TryGetProperty("info", out var info)
+            || info.ValueKind != JsonValueKind.Array)
+        {
+            return (false, Array.Empty<PlayerTrack>());
         }
 
-        _httpSearchFallbackUsed = true;
-        return await _httpClient.GetAsync(
-            $"http://mobilecdn.kugou.com{queryString}",
+        var results = new List<PlayerTrack>();
+        foreach (var song in info.EnumerateArray())
+        {
+            var hash = ReadJsonText(song, "hash").ToUpperInvariant();
+            var audioId = ReadJsonLong(song, "audio_id");
+            var title = ReadJsonText(song, "songname");
+            var artist = ReadJsonText(song, "singername");
+            if (string.IsNullOrWhiteSpace(hash)
+                || string.IsNullOrWhiteSpace(title))
+            {
+                continue;
+            }
+
+            var track = new PlayerTrack(
+                audioId > 0 ? audioId.ToString() : hash,
+                title,
+                artist,
+                ReadJsonText(song, "album_name"),
+                song.GetRawText(),
+                GetCoverUrl(song));
+            results.Add(track);
+            RememberTrack(track, hash);
+        }
+
+        return (true, results);
+    }
+
+    private async Task<(
+        bool Succeeded,
+        IReadOnlyList<PlayerTrack> Results,
+        string Failure,
+        Exception? Exception)> TrySearchByMixedAsync(
+        string query,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await SendMixedSearchAsync(
+                query,
+                cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                var failure = $"gateway HTTPS mixed 返回 {(int)response.StatusCode}"
+                    + (string.IsNullOrWhiteSpace(response.ReasonPhrase)
+                        ? string.Empty
+                        : $" {response.ReasonPhrase}");
+                return (
+                    false,
+                    Array.Empty<PlayerTrack>(),
+                    failure,
+                    null);
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(
+                cancellationToken).ConfigureAwait(false);
+            using var document = await JsonDocument.ParseAsync(
+                stream,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (!document.RootElement.TryGetProperty("data", out var data)
+                || !data.TryGetProperty("lists", out var groups)
+                || groups.ValueKind != JsonValueKind.Array)
+            {
+                return (
+                    false,
+                    Array.Empty<PlayerTrack>(),
+                    "gateway HTTPS mixed 响应缺少可解析结果",
+                    null);
+            }
+
+            return (
+                true,
+                ParseMixedKeywordTracks(groups),
+                string.Empty,
+                null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (HttpRequestException exception)
+        {
+            return (
+                false,
+                Array.Empty<PlayerTrack>(),
+                $"gateway HTTPS mixed 请求失败（{exception.Message}）",
+                exception);
+        }
+        catch (JsonException exception)
+        {
+            return (
+                false,
+                Array.Empty<PlayerTrack>(),
+                $"gateway HTTPS mixed 响应解析失败（{exception.Message}）",
+                exception);
+        }
+        catch (Exception exception)
+        {
+            return (
+                false,
+                Array.Empty<PlayerTrack>(),
+                $"gateway HTTPS mixed 失败（{exception.Message}）",
+                exception);
+        }
+    }
+
+    private IReadOnlyList<PlayerTrack> ParseMixedKeywordTracks(
+        JsonElement groups)
+    {
+        var results = new List<PlayerTrack>();
+        foreach (var group in groups.EnumerateArray())
+        {
+            if (!ReadJsonText(group, "type").Equals(
+                    "song",
+                    StringComparison.OrdinalIgnoreCase)
+                || !group.TryGetProperty("lists", out var songs)
+                || songs.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var song in songs.EnumerateArray())
+            {
+                var track = CreateMixedSearchTrack(song);
+                if (track is null)
+                {
+                    continue;
+                }
+
+                results.Add(track);
+                RememberTrack(
+                    track,
+                    ReadJsonTextAny(song, "FileHash", "Hash", "hash"));
+            }
+        }
+
+        if (results.Count > 0)
+        {
+            return results;
+        }
+
+        foreach (var group in groups.EnumerateArray())
+        {
+            if (!ReadJsonText(group, "type").Equals(
+                    "recommend",
+                    StringComparison.OrdinalIgnoreCase)
+                || !group.TryGetProperty("lists", out var recommendations)
+                || recommendations.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var recommendation in recommendations.EnumerateArray())
+            {
+                var track = CreateCodeRecommendationTrack(recommendation);
+                if (track is null)
+                {
+                    continue;
+                }
+
+                results.Add(track);
+                using var nativeData = JsonDocument.Parse(track.NativeData);
+                RememberTrack(
+                    track,
+                    ReadJsonText(nativeData.RootElement, "hash"));
+            }
+        }
+
+        return results;
+    }
+
+    private static bool IsEnvironmentVariableEnabled(string name)
+    {
+        var value = Environment.GetEnvironmentVariable(name)?.Trim();
+        return value is not null
+            && (value.Equals("1", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("on", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<(
+        KugouCopyDataResult Delivery,
+        string AnchorResetMessage)> SendInsertNextAsync(
+        (nint Handle, int ProcessId) endpoint,
+        string rawSongJson,
+        int? currentProcessId,
+        bool tryAnchorReset,
+        CancellationToken cancellationToken)
+    {
+        var anchorResetMessage = string.Empty;
+        if (tryAnchorReset)
+        {
+            var reset = await TryResetAnchorAsync(
+                currentProcessId,
+                cancellationToken).ConfigureAwait(false);
+            anchorResetMessage = reset.Message;
+        }
+
+        var payload = BuildInsertNextPayload(rawSongJson);
+        var delivery = await Task.Run(
+            () => KugouCopyDataTransport.Send(
+                endpoint.Handle,
+                payload,
+                data: 20),
             cancellationToken).ConfigureAwait(false);
+        return (delivery, anchorResetMessage);
+    }
+
+    private async Task<KugouAnchorResetAttempt> TryResetAnchorAsync(
+        int? currentProcessId,
+        CancellationToken cancellationToken)
+    {
+        if (currentProcessId is null or <= 0)
+        {
+            var skipped = KugouAnchorResetAttempt.Skipped(
+                "无法锁定酷狗目标进程 PID；已回退旧兼容插入逻辑。请更新酷狗连接器。");
+            SetAnchorResetStatus(skipped.Message);
+            return skipped;
+        }
+
+        KugouAnchorResetAttempt attempt;
+        try
+        {
+            // The native validation is bounded by the resolver and reset
+            // thread timeouts. It must not be allowed to cancel the caller
+            // between allocation and the finally-based VirtualFreeEx.
+            attempt = await Task.Run(
+                () => KugouAnchorHistoryReset.TryReset(currentProcessId.Value),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            attempt = new KugouAnchorResetAttempt(
+                false,
+                false,
+                KugouAnchorResetProfilePolicy.BuildFailurePrompt(
+                    string.Empty,
+                    exception.Message),
+                string.Empty,
+                string.Empty);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        SetAnchorResetStatus(attempt.Message);
+        return attempt;
+    }
+
+    private void SetAnchorResetStatus(string message)
+    {
+        if (string.Equals(
+                _anchorResetStatus,
+                message,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _anchorResetStatus = message;
+        _eventMonitor.NotifySnapshotInvalidated();
+    }
+
+    private static string AnchorResetSuffix(string message)
+    {
+        return string.IsNullOrWhiteSpace(message)
+            ? string.Empty
+            : $" 锚点状态：{message}";
+    }
+
+    private static string AppendAnchorResetMessage(
+        string message,
+        string anchorResetMessage)
+    {
+        return message + AnchorResetSuffix(anchorResetMessage);
     }
 
     public async Task<PlayerOperationResult> ExecuteAsync(
@@ -858,33 +1160,64 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             }
 
             var advanceImmediately = command == PlayerCommand.PlaySelected;
+            var displacedPending = advanceImmediately
+                ? GetDifferentPendingNext(track)
+                : null;
+            var alreadyInserted = advanceImmediately && HasPendingNext(track);
             if (advanceImmediately)
             {
                 _nextGuard.Cancel(
                     "下一首守卫已因立即播放其他歌曲而取消");
+
+                // The known-good 1.5.x path never pauses or performs a
+                // Next -> Previous round trip before insertion. Those extra
+                // transitions expose KuGou's transient queue state to the host
+                // and can consume the request that was already inserted next.
+                if (TrackMatches(before.Current, track))
+                {
+                    ClearPendingNext(track);
+                    RestorePendingNext(displacedPending);
+                    return new PlayerOperationResult(
+                        OperationOutcome.Verified,
+                        $"目标已经是当前歌曲，未重复插入或切歌：{track.DisplayName}",
+                        before);
+                }
             }
 
             // KuGou's Play=1/Insert=0/Force=1 payload rebuilds or appends to
             // the player's queue. Always insert exactly one track after the
             // current item. "Play selected" is implemented by advancing to
             // that newly inserted item with KuGou's targeted Next command.
-            var payload = BuildInsertNextPayload(track.NativeData);
-            var delivery = await Task.Run(
-                () => KugouCopyDataTransport.Send(
-                    endpoint.Value.Handle,
-                    payload,
-                    data: 20),
-                cancellationToken).ConfigureAwait(false);
-            if (!delivery.Accepted)
+            var anchorResetMessage = string.Empty;
+            if (!alreadyInserted)
             {
-                return new PlayerOperationResult(
-                    OperationOutcome.Rejected,
-                    delivery.Message,
-                    await ProbeAsync(cancellationToken).ConfigureAwait(false));
+                var insertion = await SendInsertNextAsync(
+                    endpoint.Value,
+                    track.NativeData,
+                    endpoint.Value.ProcessId,
+                    tryAnchorReset: true,
+                    cancellationToken).ConfigureAwait(false);
+                var delivery = insertion.Delivery;
+                anchorResetMessage = insertion.AnchorResetMessage;
+                if (!delivery.Accepted)
+                {
+                    return new PlayerOperationResult(
+                        OperationOutcome.Rejected,
+                        AppendAnchorResetMessage(
+                            delivery.Message,
+                            anchorResetMessage),
+                        await ProbeAsync(cancellationToken).ConfigureAwait(false));
+                }
+
+                RememberPendingNext(track);
             }
 
             if (!advanceImmediately)
             {
+                // Match the observed-good 1.5.x timing. If KuGou applies the
+                // asynchronous queue mutation late, the guard performs one
+                // bounded takeover instead of pre-emptively changing tracks.
+                await Task.Delay(60, cancellationToken).ConfigureAwait(false);
                 var armed = _nextGuard.Arm(
                     before.Current,
                     track,
@@ -896,13 +1229,20 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                     armed
                         ? OperationOutcome.Accepted
                         : OperationOutcome.Indeterminate,
-                    "酷狗已将目标歌曲插入当前歌曲之后。"
+                    (alreadyInserted
+                        ? "酷狗目标已存在于待切换事务中，本次没有重复插入。"
+                        : "酷狗已将目标歌曲插入当前歌曲之后。")
                     + (armed
                         ? $" {guardMessage}"
-                        : " 当前歌曲不可识别，守卫未启动。"),
+                        : " 当前歌曲不可识别，守卫未启动。")
+                    + AnchorResetSuffix(anchorResetMessage),
                     await ProbeAsync(cancellationToken).ConfigureAwait(false));
             }
 
+            // Arm before the one and only Next command. This is the old stable
+            // transaction: insert once -> arm once -> advance once. It avoids
+            // the pause/round-trip sequence that produced transient track
+            // events and removed a previously inserted request.
             var guardArmed = _nextGuard.Arm(
                 before.Current,
                 track,
@@ -910,24 +1250,34 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                 TakeOverGuardedNextAsync,
                 _lifetimeCancellation.Token,
                 out _);
-            await Task.Delay(60, cancellationToken).ConfigureAwait(false);
-            var advance = await Task.Run(
-                () => KugouNativeController.SendDirectKugouCommand(
-                    KugouAppCommand.NextTrack,
-                    TimeSpan.FromSeconds(6)),
+            await Task.Delay(
+                alreadyInserted ? 20 : 60,
+                cancellationToken).ConfigureAwait(false);
+            var advance = await SendDirectCommandAsync(
+                KugouAppCommand.NextTrack,
+                TimeSpan.FromSeconds(6),
                 cancellationToken).ConfigureAwait(false);
             if (!advance.Sent)
             {
                 return new PlayerOperationResult(
                     OperationOutcome.Indeterminate,
-                    "酷狗已将目标插入下一首，但内部下一首消息未被接受；"
+                    "酷狗已插入目标，但没有接受本次唯一的下一首命令；"
                     + (guardArmed
-                        ? "兜底守卫仍在等待自然切歌。"
-                        : "当前歌曲不可识别，无法启动兜底守卫。")
+                        ? "守卫仍在等待自然切歌。"
+                        : "当前歌曲不可识别，守卫未启动。")
                     + (string.IsNullOrWhiteSpace(advance.Error)
                         ? string.Empty
-                        : $" {advance.Error}"),
+                        : $" {advance.Error}")
+                    + AnchorResetSuffix(anchorResetMessage),
                     await ProbeAsync(cancellationToken).ConfigureAwait(false));
+            }
+
+            // KuGou's old insert path keeps the displaced native next row
+            // behind the immediate request. Restore only connector bookkeeping;
+            // never send a second WM_COPYDATA payload for the displaced row.
+            if (displacedPending is not null)
+            {
+                RestorePendingNext(displacedPending);
             }
 
             var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
@@ -936,24 +1286,35 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-                afterPlay = await ProbeAsync(cancellationToken).ConfigureAwait(false);
-                if (TrackMatches(afterPlay.Current, track))
+                afterPlay = await ProbeAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (!TrackMatches(afterPlay.Current, track))
                 {
-                    _nextGuard.Cancel(
-                        $"立即播放已正确命中：{track.DisplayName}");
-                    return new PlayerOperationResult(
-                        OperationOutcome.Verified,
-                        $"酷狗已先插入下一首，再切换并播放目标：{track.DisplayName}",
-                        afterPlay);
+                    continue;
                 }
+
+                if (displacedPending is null)
+                {
+                    ClearPendingNext(track);
+                }
+                _nextGuard.Cancel(
+                    $"立即播放已正确命中：{track.DisplayName}");
+                return new PlayerOperationResult(
+                    OperationOutcome.Verified,
+                    (displacedPending is null
+                        ? $"酷狗已插入一次并切换到目标：{track.DisplayName}"
+                        : $"酷狗已切换到 {track.DisplayName}；原来的下一首 {displacedPending.Target.DisplayName} 仍保留在其后。")
+                    + AnchorResetSuffix(anchorResetMessage),
+                    afterPlay);
             }
 
             return new PlayerOperationResult(
                 OperationOutcome.Indeterminate,
-                "酷狗已插入目标并发送下一首，但没有在等待窗口内确认目标；"
+                "酷狗已插入目标并只发送一次下一首，但未在等待窗口内确认命中；"
                 + (guardArmed
-                    ? "兜底守卫会继续检查实际切歌结果。"
-                    : "当前歌曲不可识别，兜底守卫未启动。"),
+                    ? "守卫会继续检查实际切歌结果。"
+                    : "当前歌曲不可识别，守卫未启动。")
+                + AnchorResetSuffix(anchorResetMessage),
                 afterPlay);
         }
         finally
@@ -984,6 +1345,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }
 
         _nextGuard.Dispose();
+        await _eventMonitor.DisposeAsync().ConfigureAwait(false);
         _lifetimeCancellation.Dispose();
         _httpClient.Dispose();
         _operationGate.Dispose();
@@ -1000,55 +1362,577 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }, cancellationToken);
     }
 
+    private async Task<bool> WaitForTrackStableAsync(
+        PlayerTrack target,
+        TimeSpan timeout,
+        TimeSpan stableFor,
+        CancellationToken cancellationToken)
+    {
+        await using var subscription = _eventMonitor.Subscribe();
+        await _eventMonitor.EnsureStartedAsync().ConfigureAwait(false);
+        using var timeoutCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCancellation.CancelAfter(timeout);
+        var waitToken = timeoutCancellation.Token;
+        var initialSettleReadPending = true;
+
+        try
+        {
+            while (true)
+            {
+                var current = await ReadCurrentForGuardAsync(waitToken)
+                    .ConfigureAwait(false);
+                if (TrackMatches(current, target))
+                {
+                    await Task.Delay(stableFor, waitToken)
+                        .ConfigureAwait(false);
+                    current = await ReadCurrentForGuardAsync(waitToken)
+                        .ConfigureAwait(false);
+                    if (TrackMatches(current, target))
+                    {
+                        return true;
+                    }
+                }
+
+                if (initialSettleReadPending)
+                {
+                    initialSettleReadPending = false;
+                    await Task.Delay(50, waitToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!await subscription.Reader.WaitToReadAsync(waitToken)
+                        .ConfigureAwait(false))
+                {
+                    return false;
+                }
+                while (subscription.Reader.TryRead(out _))
+                {
+                    // Coalesce the current title/INI event burst.
+                }
+                await Task.Delay(25, waitToken).ConfigureAwait(false);
+                while (subscription.Reader.TryRead(out _))
+                {
+                    // Drain writes raised while the INI state settled.
+                }
+            }
+        }
+        catch (OperationCanceledException)
+            when (!cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+    }
+
     private async Task<string> TakeOverGuardedNextAsync(
         PlayerTrack target,
         CancellationToken cancellationToken)
     {
-        var endpoint = FindValidatedIpcEndpoint();
-        if (endpoint is null)
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            return "检测到错误歌曲，但酷狗点歌 IPC 当前不可用。";
+            return await RecoverGuardedNextCoreAsync(
+                target,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _operationGate.Release();
+        }
+    }
+
+    private async Task<string> AdvancePendingNextWithoutReinsertAsync(
+        PlayerTrack target,
+        CancellationToken cancellationToken)
+    {
+        if (!HasPendingNext(target))
+        {
+            return "没有可确认的原生下一首事务；为避免误切或重复插歌，已停止兜底。";
         }
 
-        var payload = BuildInsertNextPayload(target.NativeData);
-        var delivery = await Task.Run(
-            () => KugouCopyDataTransport.Send(
-                endpoint.Value.Handle,
-                payload,
-                data: 20),
+        var paused = await SendDirectCommandAsync(
+            KugouAppCommand.PlayPause,
+            TimeSpan.Zero,
             cancellationToken).ConfigureAwait(false);
-        if (!delivery.Accepted)
+        if (!paused.Sent)
         {
-            return $"检测到错误歌曲，但重新插入目标失败：{delivery.Message}";
+            return "无法先暂停酷狗；为避免连续切歌，已取消本次兜底。"
+                + (paused.Error ?? string.Empty);
         }
 
-        await Task.Delay(60, cancellationToken).ConfigureAwait(false);
-        var advance = await Task.Run(
-            () => KugouNativeController.SendDirectKugouCommand(
-                KugouAppCommand.NextTrack,
-                TimeSpan.FromSeconds(6)),
+        await Task.Delay(120, cancellationToken).ConfigureAwait(false);
+        var current = await ReadCurrentForGuardAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (TrackMatches(current, target))
+        {
+            ClearPendingNext(target);
+            var resumed = await SendDirectCommandAsync(
+                KugouAppCommand.PlayPause,
+                TimeSpan.Zero,
+                cancellationToken).ConfigureAwait(false);
+            return resumed.Sent
+                ? $"暂停后确认目标已经命中，已恢复播放：{target.DisplayName}"
+                : $"目标已经命中，但恢复播放命令未被接受：{target.DisplayName}";
+        }
+
+        // InsertNext was already accepted before the guard was armed. Send one
+        // and only one Next command; never create another queue row here.
+        var advance = await SendDirectCommandAsync(
+            KugouAppCommand.NextTrack,
+            TimeSpan.FromMilliseconds(800),
             cancellationToken).ConfigureAwait(false);
         if (!advance.Sent)
         {
-            return "已重新插入目标为下一首，但酷狗没有接受下一首命令："
-                   + (advance.Error ?? "未知错误");
+            return "酷狗没有接受唯一的一次下一首命令；未重复插入，也未继续切歌。"
+                + (advance.Error ?? string.Empty);
         }
 
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
-        while (DateTimeOffset.UtcNow < deadline)
+        if (await WaitForTrackStableAsync(
+                target,
+                TimeSpan.FromSeconds(4),
+                TimeSpan.FromMilliseconds(350),
+                cancellationToken).ConfigureAwait(false))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var current = await ReadCurrentForGuardAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (TrackMatches(current, target))
+            ClearPendingNext(target);
+            return $"已暂停错误歌曲并只切换一次到目标：{target.DisplayName}";
+        }
+
+        return $"已执行一次有序兜底但未确认目标；为避免连续向下切歌，已停止：{target.DisplayName}";
+    }
+
+    private async Task<string> RecoverGuardedNextCoreAsync(
+        PlayerTrack target,
+        CancellationToken cancellationToken)
+    {
+        if (!HasPendingNext(target))
+        {
+            return "没有可确认的待切换事务；为避免盲目连续切歌，已停止兜底。";
+        }
+
+        // The guard is entered only after KuGou has already changed to a wrong
+        // song. Previous returns to the original song and, unlike Next or a
+        // natural transition, resets KuGou's persistent insertion anchor.
+        // The remaining transaction is deliberately bounded: pause once,
+        // insert once, and advance once. There is no retry loop.
+        var returned = await SendDirectCommandAsync(
+            KugouAppCommand.PreviousTrack,
+            TimeSpan.FromMilliseconds(900),
+            cancellationToken).ConfigureAwait(false);
+        if (!returned.Sent)
+        {
+            return "检测到错误下一首，但酷狗没有接受上一首重置锚点命令；"
+                   + "为避免连续跳歌，已取消本次兜底。"
+                   + (returned.Error ?? string.Empty);
+        }
+
+        await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+        var current = await ReadCurrentForGuardAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (TrackMatches(current, target))
+        {
+            ClearPendingNext(target);
+            return $"上一首已直接回到目标：{target.DisplayName}";
+        }
+
+        var stopped = await SendDirectCommandAsync(
+            KugouAppCommand.PlayPause,
+            TimeSpan.Zero,
+            cancellationToken).ConfigureAwait(false);
+        if (!stopped.Sent)
+        {
+            return "已用上一首回到原曲并重置锚点，但无法暂停酷狗；"
+                   + "为避免插入期间漏音，没有继续操作。"
+                   + (stopped.Error ?? string.Empty);
+        }
+
+        await Task.Delay(140, cancellationToken).ConfigureAwait(false);
+
+        var endpoint = FindValidatedIpcEndpoint();
+        if (endpoint is null)
+        {
+            return "已经暂停错误歌曲，但酷狗点歌 IPC 当前不可用；没有继续切歌。";
+        }
+
+        // Previous above is the deliberately bounded legacy anchor reset.
+        // Do not run the no-track profile a second time in this recovery path.
+        var insertion = await SendInsertNextAsync(
+            endpoint.Value,
+            target.NativeData,
+            currentProcessId: endpoint.Value.ProcessId,
+            tryAnchorReset: false,
+            cancellationToken).ConfigureAwait(false);
+        var delivery = insertion.Delivery;
+        if (!delivery.Accepted)
+        {
+            return "已经暂停错误歌曲，但重新插入目标失败；没有继续切歌。"
+                   + delivery.Message
+                   + AnchorResetSuffix(insertion.AnchorResetMessage);
+        }
+
+        RememberPendingNext(target);
+        await Task.Delay(350, cancellationToken).ConfigureAwait(false);
+
+        var advance = await SendDirectCommandAsync(
+            KugouAppCommand.NextTrack,
+            TimeSpan.FromMilliseconds(800),
+            cancellationToken).ConfigureAwait(false);
+        if (!advance.Sent)
+        {
+            return "已经暂停并重新插入目标，但酷狗没有接受唯一一次下一首命令；"
+                   + "为避免越过歌曲，没有重试。"
+                   + (advance.Error ?? string.Empty);
+        }
+
+        if (await WaitForTrackStableAsync(
+                target,
+                TimeSpan.FromSeconds(4),
+                TimeSpan.FromMilliseconds(350),
+                cancellationToken).ConfigureAwait(false))
+        {
+            ClearPendingNext(target);
+            return $"已按顺序上一首重置锚点、暂停、重新插入并只切换一次到目标：{target.DisplayName}";
+        }
+
+        return $"已完成上一首重置锚点的一次有序兜底，但仍未确认命中；"
+               + $"为避免连续往下切，已停止重试：{target.DisplayName}";
+    }
+
+    private async Task<(bool Success, string Message)>
+        ResetInsertionAnchorByRoundTripAsync(
+            PlayerTrack? baseline,
+            CancellationToken cancellationToken)
+    {
+        if (baseline is null)
+        {
+            return (
+                false,
+                "酷狗立即播放已暂停，但无法识别原曲；为避免无法返回原位置，没有执行锚点重置。"
+            );
+        }
+
+        var forward = await SendDirectCommandAsync(
+            KugouAppCommand.NextTrack,
+            TimeSpan.FromMilliseconds(900),
+            cancellationToken).ConfigureAwait(false);
+        if (!forward.Sent)
+        {
+            _ = await SendDirectCommandAsync(
+                KugouAppCommand.PlayPause,
+                TimeSpan.Zero,
+                cancellationToken).ConfigureAwait(false);
+            return (
+                false,
+                "酷狗已暂停，但没有接受用于锚点重置的下一首命令；"
+                + "已尝试恢复播放，没有插入新目标。"
+                + (forward.Error ?? string.Empty));
+        }
+
+        await Task.Delay(80, cancellationToken).ConfigureAwait(false);
+        var backward = await SendDirectCommandAsync(
+            KugouAppCommand.PreviousTrack,
+            TimeSpan.FromMilliseconds(900),
+            cancellationToken).ConfigureAwait(false);
+        if (!backward.Sent)
+        {
+            return (
+                false,
+                "酷狗已在暂停事务中切到下一首，但没有接受返回原曲的上一首命令；"
+                + "为避免在错误位置插歌，已停止事务。"
+                + (backward.Error ?? string.Empty));
+        }
+
+        if (await WaitForTrackStableAsync(
+                baseline,
+                TimeSpan.FromSeconds(3),
+                TimeSpan.FromMilliseconds(180),
+                cancellationToken).ConfigureAwait(false))
+        {
+            return (
+                true,
+                $"已通过暂停中的下一首→上一首回到原曲并重置插入锚点：{baseline.DisplayName}");
+        }
+
+        return (
+            false,
+            $"酷狗接受了下一首→上一首，但 3 秒内未稳定返回原曲 {baseline.DisplayName}；"
+            + "为避免在错误位置插歌，已停止事务。"
+        );
+    }
+
+    private static Task<BackgroundControlResult> SendDirectCommandAsync(
+        KugouAppCommand command,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        return Task.Run(
+            () => KugouNativeController.SendDirectKugouCommand(
+                command,
+                timeout),
+            cancellationToken);
+    }
+
+    private (bool Success, string Message)
+        PreserveDisplacedPendingAfterCurrent(
+            PendingKugouNext? displacedPending)
+    {
+        if (displacedPending is null)
+        {
+            return (true, string.Empty);
+        }
+
+        // The paused Next -> Previous round trip does not remove the native
+        // queue row. After inserting and advancing to the immediate request,
+        // the displaced request is already its next item. Only restore our
+        // bookkeeping; sending WM_COPYDATA again would create a duplicate.
+        RestorePendingNext(displacedPending);
+        return (
+            true,
+            $"旧下一首仍原样保留在其后，未重复插入：{displacedPending.Target.DisplayName}。"
+        );
+    }
+
+    private async Task<(bool Success, string Message)>
+        InsertDisplacedPendingAfterCurrentAsync(
+            PendingKugouNext? displacedPending,
+            CancellationToken cancellationToken)
+    {
+        if (displacedPending is null)
+        {
+            return (true, string.Empty);
+        }
+
+        var endpoint = FindValidatedIpcEndpoint();
+        if (endpoint is null)
+        {
+            RestorePendingNext(null);
+            return (
+                false,
+                $"旧下一首 {displacedPending.Target.DisplayName} 未能补回：酷狗点歌 IPC 不可用。");
+        }
+
+        var insertion = await SendInsertNextAsync(
+            endpoint.Value,
+            displacedPending.Target.NativeData,
+            currentProcessId: endpoint.Value.ProcessId,
+            tryAnchorReset: true,
+            cancellationToken).ConfigureAwait(false);
+        var delivery = insertion.Delivery;
+        if (!delivery.Accepted)
+        {
+            RestorePendingNext(null);
+            return (
+                false,
+                $"旧下一首 {displacedPending.Target.DisplayName} 未能补回："
+                + delivery.Message
+                + AnchorResetSuffix(insertion.AnchorResetMessage));
+        }
+
+        RememberPendingNext(displacedPending.Target);
+        await Task.Delay(160, cancellationToken).ConfigureAwait(false);
+        return (
+            true,
+            $"旧下一首已只补回一次：{displacedPending.Target.DisplayName}。");
+    }
+
+    private bool HasPendingNext(PlayerTrack target)
+    {
+        lock (_pendingNextSync)
+        {
+            if (_pendingNext is null)
             {
-                return $"已重新插入目标并切换成功：{target.DisplayName}";
+                return false;
             }
 
-            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+            if (DateTimeOffset.UtcNow - _pendingNext.InsertedAt
+                > TimeSpan.FromMinutes(10))
+            {
+                _pendingNext = null;
+                _pendingTargetObservedAt = null;
+                return false;
+            }
+
+            return TrackMatches(_pendingNext.Target, target);
+        }
+    }
+
+    private PendingKugouNext? GetDifferentPendingNext(PlayerTrack target)
+    {
+        lock (_pendingNextSync)
+        {
+            if (_pendingNext is null)
+            {
+                return null;
+            }
+
+            if (DateTimeOffset.UtcNow - _pendingNext.InsertedAt
+                > TimeSpan.FromMinutes(10))
+            {
+                _pendingNext = null;
+                _pendingTargetObservedAt = null;
+                return null;
+            }
+
+            return TrackMatches(_pendingNext.Target, target)
+                ? null
+                : _pendingNext;
+        }
+    }
+
+    private PlayerTrack? GetPendingNextTrack()
+    {
+        lock (_pendingNextSync)
+        {
+            if (_pendingNext is null)
+            {
+                return null;
+            }
+
+            if (DateTimeOffset.UtcNow - _pendingNext.InsertedAt
+                > TimeSpan.FromMinutes(10))
+            {
+                _pendingNext = null;
+                _pendingTargetObservedAt = null;
+                return null;
+            }
+
+            return _pendingNext.Target;
+        }
+    }
+
+    private void RestorePendingNext(PendingKugouNext? pending)
+    {
+        lock (_pendingNextSync)
+        {
+            _pendingNext = pending is null
+                ? null
+                : new PendingKugouNext(
+                    pending.Target,
+                    DateTimeOffset.UtcNow);
+            _pendingTargetObservedAt = null;
+        }
+        _eventMonitor.NotifySnapshotInvalidated();
+    }
+
+    private void RememberPendingNext(PlayerTrack target)
+    {
+        lock (_pendingNextSync)
+        {
+            _pendingNext = new PendingKugouNext(
+                target,
+                DateTimeOffset.UtcNow);
+            _pendingTargetObservedAt = null;
+        }
+        _eventMonitor.NotifySnapshotInvalidated();
+    }
+
+    private void ClearPendingNextIfPlaying(PlayerTrack? current)
+    {
+        PendingKugouNext? pendingToConfirm = null;
+        DateTimeOffset? observedAt = null;
+        lock (_pendingNextSync)
+        {
+            if (_pendingNext is null)
+            {
+                _pendingTargetObservedAt = null;
+                return;
+            }
+
+            if (!TrackMatches(current, _pendingNext.Target))
+            {
+                _pendingTargetObservedAt = null;
+                return;
+            }
+
+            if (_pendingTargetObservedAt is null)
+            {
+                _pendingTargetObservedAt = DateTimeOffset.UtcNow;
+                pendingToConfirm = _pendingNext;
+                observedAt = _pendingTargetObservedAt;
+            }
         }
 
-        return $"已重新插入目标并发送下一首，但尚未确认命中：{target.DisplayName}";
+        if (pendingToConfirm is not null && observedAt is not null)
+        {
+            _ = ConfirmPendingTargetAfterDelayAsync(
+                pendingToConfirm,
+                observedAt.Value);
+        }
+    }
+
+    private async Task ConfirmPendingTargetAfterDelayAsync(
+        PendingKugouNext pending,
+        DateTimeOffset observedAt)
+    {
+        try
+        {
+            await Task.Delay(
+                    TimeSpan.FromMilliseconds(350),
+                    _lifetimeCancellation.Token)
+                .ConfigureAwait(false);
+            var current = await ReadCurrentForGuardAsync(
+                    _lifetimeCancellation.Token)
+                .ConfigureAwait(false);
+            var cleared = false;
+            lock (_pendingNextSync)
+            {
+                if (_pendingNext is not null
+                    && _pendingNext.InsertedAt == pending.InsertedAt
+                    && _pendingTargetObservedAt == observedAt
+                    && TrackMatches(current, pending.Target))
+                {
+                    _pendingNext = null;
+                    _pendingTargetObservedAt = null;
+                    cleared = true;
+                }
+                else if (_pendingNext is not null
+                         && _pendingNext.InsertedAt == pending.InsertedAt
+                         && _pendingTargetObservedAt == observedAt)
+                {
+                    _pendingTargetObservedAt = null;
+                }
+            }
+
+            if (cleared)
+            {
+                _eventMonitor.NotifySnapshotInvalidated();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Connector shutdown cancels the one-shot stability confirmation.
+        }
+        catch
+        {
+            lock (_pendingNextSync)
+            {
+                if (_pendingNext is not null
+                    && _pendingNext.InsertedAt == pending.InsertedAt
+                    && _pendingTargetObservedAt == observedAt)
+                {
+                    _pendingTargetObservedAt = null;
+                }
+            }
+        }
+    }
+
+    private void ClearPendingNext(PlayerTrack target)
+    {
+        var cleared = false;
+        lock (_pendingNextSync)
+        {
+            if (_pendingNext is not null
+                && TrackMatches(_pendingNext.Target, target))
+            {
+                _pendingNext = null;
+                _pendingTargetObservedAt = null;
+                cleared = true;
+            }
+        }
+
+        if (cleared)
+        {
+            _eventMonitor.NotifySnapshotInvalidated();
+        }
     }
 
     private static (int ProcessId, string Version)? FindTarget()
@@ -1056,15 +1940,17 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         var windows = KugouNativeController.InspectWindows();
         var main = windows
             .Where(window =>
-                window.ParentHandle is null
-                && window.IsVisible
-                && window.ClassName.Equals(
-                    "kugou_ui",
-                    StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(window =>
+                window.ParentHandle is null)
+            .OrderByDescending(window => window.IsVisible)
+            .ThenByDescending(window => window.ClassName.Equals(
+                "kugou_ui",
+                StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(window =>
                 window.Title.Contains(
                     "酷狗音乐",
                     StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(window =>
+                (long)window.Width * window.Height)
             .FirstOrDefault();
         if (main is null)
         {
@@ -1202,6 +2088,13 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             : $"{Normalize(current.Title)}|{Normalize(current.Artist)}";
         lock (_trackSync)
         {
+            if (_artworkRetryAfter.TryGetValue(identity, out var retryAfter)
+                && retryAfter > DateTimeOffset.UtcNow)
+            {
+                return;
+            }
+
+            _artworkRetryAfter.Remove(identity);
             if (!_artworkLookups.Add(identity))
             {
                 return;
@@ -1221,9 +2114,26 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             _ = task.ContinueWith(
                 completed =>
                 {
+                    var resolved = completed.IsCompletedSuccessfully
+                        && completed.Result;
                     lock (_trackSync)
                     {
                         _artworkTasks.Remove(completed);
+                        _artworkLookups.Remove(identity);
+                        if (!resolved)
+                        {
+                            _artworkRetryAfter[identity] =
+                                DateTimeOffset.UtcNow
+                                + TimeSpan.FromSeconds(20);
+                        }
+                        else
+                        {
+                            _artworkRetryAfter.Remove(identity);
+                        }
+                    }
+                    if (resolved)
+                    {
+                        _eventMonitor.NotifySnapshotInvalidated();
                     }
                 },
                 CancellationToken.None,
@@ -1232,7 +2142,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }
     }
 
-    private async Task ResolveArtworkAsync(
+    private async Task<bool> ResolveArtworkAsync(
         string identity,
         PlayerTrack current,
         CancellationToken cancellationToken)
@@ -1251,15 +2161,20 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             {
                 var enriched = match with { Id = current.Id };
                 RememberTrack(enriched, identity);
+                return true;
             }
+
+            return false;
         }
         catch (OperationCanceledException)
         {
             // Connector shutdown or a cancelled request does not affect playback.
+            return false;
         }
         catch
         {
             // Missing artwork is non-fatal; playback state remains available.
+            return false;
         }
     }
 
@@ -1295,6 +2210,29 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             value.Normalize(NormalizationForm.FormKC)
                 .Where(char.IsLetterOrDigit))
             .ToUpperInvariant();
+    }
+
+    private static string BuildSnapshotFingerprint(PlayerSnapshot snapshot)
+    {
+        var current = snapshot.Current;
+        var next = snapshot.Next;
+        return string.Join(
+            '\u001F',
+            snapshot.Connected.ToString(),
+            snapshot.ProcessId?.ToString(),
+            snapshot.Version,
+            snapshot.Status,
+            current?.Id,
+            current?.Title,
+            current?.Artist,
+            current?.Album,
+            current?.CoverUrl,
+            next?.Id,
+            next?.Title,
+            next?.Artist,
+            next?.Album,
+            next?.CoverUrl,
+            snapshot.NextSource);
     }
 
     private static string Normalize(string value)
@@ -1546,6 +2484,10 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             ? number
             : 0;
     }
+
+    private sealed record PendingKugouNext(
+        PlayerTrack Target,
+        DateTimeOffset InsertedAt);
 }
 
 internal sealed record KugouCopyDataResult(

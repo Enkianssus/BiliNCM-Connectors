@@ -47,9 +47,18 @@ jobs:
           }
           $runtime = if ($id -eq 'netease') { 'win-x64' } else { 'win-x86' }
           $asset = "bilincm-connector-$id-$version-$runtime.zip"
+          $assemblyVersion = $version
+          if ($id -eq 'netease') {
+            $parts = $version -split '\.'
+            if ($parts.Count -ne 5) {
+              throw "NetEase catalog version must be player major.minor.patch.build plus connector revision: $version"
+            }
+            $assemblyVersion = "$($parts[0]).$($parts[1]).$($parts[2]).$($parts[4])"
+          }
 
           "id=$id" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
+          "assembly_version=$assemblyVersion" >> $env:GITHUB_OUTPUT
           "project_name=$projectName" >> $env:GITHUB_OUTPUT
           "asset=$asset" >> $env:GITHUB_OUTPUT
           "runtime=$runtime" >> $env:GITHUB_OUTPUT
@@ -67,7 +76,8 @@ jobs:
             -c Release `
             -r "${{ steps.metadata.outputs.runtime }}" `
             --self-contained true `
-            -p:Version="$version" `
+            -p:Version="${{ steps.metadata.outputs.assembly_version }}" `
+            -p:InformationalVersion="$version" `
             -o "$output"
 
           node scripts/smoke-connector.mjs `

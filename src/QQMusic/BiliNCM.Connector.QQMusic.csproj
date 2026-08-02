@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>BiliNCM.Connector.QQMusic</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
-    <Version>1.4.0</Version>
+    <Version>22.41.4</Version>
     <InformationalVersion>$(Version)</InformationalVersion>
   </PropertyGroup>
 

@@ -28,7 +28,7 @@ internal sealed class QQMusicTimelineProbe
     private TimeSpan _fallbackSourcePosition;
     private TimeSpan _fallbackSourceEndTime;
 
-    private QQMusicTimelineProbe(
+    internal QQMusicTimelineProbe(
         GlobalSystemMediaTransportControlsSessionManager manager)
     {
         _manager = manager;

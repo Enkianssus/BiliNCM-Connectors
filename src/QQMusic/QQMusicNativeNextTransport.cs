@@ -23,6 +23,7 @@ internal sealed record QQMusicNativeNextResult(
     int NativeStage,
     int GetCatManagerHresult,
     int GetSongInfoHresult,
+    int AddSongsHresult,
     uint ResolvedSongId,
     int HiddenCategoryId,
     int HiddenCategoryCount,
@@ -116,6 +117,7 @@ internal static class QQMusicNativeNextTransport
         var stage = 0;
         var getCatManagerHresult = unchecked((int)0x80004005);
         var getSongInfoHresult = unchecked((int)0x80004005);
+        var addSongsHresult = unchecked((int)0x80004005);
         uint resolvedSongId = 0;
         var hiddenCategoryId = 0;
         var hiddenCategoryCount = 0;
@@ -290,6 +292,8 @@ internal static class QQMusicNativeNextTransport
                 BitConverter.ToInt32(data, 4);
             getSongInfoHresult =
                 BitConverter.ToInt32(data, 12);
+            addSongsHresult =
+                BitConverter.ToInt32(data, 16);
             resolvedSongId =
                 BitConverter.ToUInt32(
                     data,
@@ -329,6 +333,13 @@ internal static class QQMusicNativeNextTransport
                 throw new InvalidOperationException(
                     "UI 跳板解析到的 SongItem 与目标 songID 不一致："
                     + $"目标={song.SongId}，实际={resolvedSongId}。");
+            }
+
+            if (addSongsHresult < 0)
+            {
+                throw new COMException(
+                    "AddSongs(mode=0) 没有接受下一首插入。",
+                    addSongsHresult);
             }
         }
         catch (Exception exception)
@@ -435,6 +446,7 @@ internal static class QQMusicNativeNextTransport
             stage,
             getCatManagerHresult,
             getSongInfoHresult,
+            addSongsHresult,
             resolvedSongId,
             checked((uint)song.SongId),
             foregroundUnchanged,
@@ -459,6 +471,7 @@ internal static class QQMusicNativeNextTransport
             stage,
             getCatManagerHresult,
             getSongInfoHresult,
+            addSongsHresult,
             resolvedSongId,
             hiddenCategoryId,
             hiddenCategoryCount,
@@ -841,6 +854,7 @@ internal static class QQMusicNativeNextTransport
         int stage,
         int getCatManagerHresult,
         int getSongInfoHresult,
+        int addSongsHresult,
         uint resolvedSongId,
         uint requestedSongId,
         bool foregroundUnchanged,
@@ -865,6 +879,7 @@ internal static class QQMusicNativeNextTransport
         if (stage != 5
             || getCatManagerHresult < 0
             || getSongInfoHresult < 0
+            || addSongsHresult < 0
             || resolvedSongId != requestedSongId)
         {
             return "NativeNextTrampolineNotVerified";

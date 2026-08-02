@@ -2438,10 +2438,13 @@ internal static class KugouNativeController
     private static (nint Handle, int ProcessId)? FindMainWindow()
     {
         return InspectWindows()
-            .Where(window => window.ParentHandle is null && window.IsVisible)
-            .OrderByDescending(window => window.ClassName.Equals("kugou_ui", StringComparison.OrdinalIgnoreCase))
+            .Where(window => window.ParentHandle is null)
+            .OrderByDescending(window => window.IsVisible)
+            .ThenByDescending(window => window.ClassName.Equals("kugou_ui", StringComparison.OrdinalIgnoreCase))
             .ThenByDescending(window => window.Title.Contains("酷狗音乐", StringComparison.OrdinalIgnoreCase))
             .ThenByDescending(window => !string.IsNullOrWhiteSpace(window.Title))
+            .ThenByDescending(window =>
+                (long)window.Width * window.Height)
             .Select(window => ((nint)window.Handle, window.ProcessId))
             .Cast<(nint Handle, int ProcessId)?>()
             .FirstOrDefault();

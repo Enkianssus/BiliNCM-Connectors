@@ -9,4 +9,3 @@ internal static class Program
             new KugouPlayerAdapter());
     }
 }
-
