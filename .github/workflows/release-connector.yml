@@ -63,6 +63,41 @@ jobs:
           "asset=$asset" >> $env:GITHUB_OUTPUT
           "runtime=$runtime" >> $env:GITHUB_OUTPUT
 
+      - name: Checkout pinned CEF 4472 headers
+        if: steps.metadata.outputs.id == 'netease'
+        uses: actions/checkout@v6
+        with:
+          repository: chromiumembedded/cef
+          ref: 04c8d5653ca5b3e36b693d871cce1ef09617bfc9
+          path: .tmp/cef-4472-source
+          sparse-checkout: include
+          persist-credentials: false
+
+      - name: Prepare pinned CEF 4472 headers
+        if: steps.metadata.outputs.id == 'netease'
+        shell: pwsh
+        run: |
+          $cefRoot = 'native/Netease/cef-4472'
+          New-Item -ItemType Directory -Force $cefRoot | Out-Null
+          Copy-Item `
+            -Recurse `
+            -Force `
+            '.tmp/cef-4472-source/include' `
+            "$cefRoot/include"
+
+          $netBase = "$cefRoot/net/base"
+          New-Item -ItemType Directory -Force $netBase | Out-Null
+          $netErrorList = "$netBase/net_error_list.h"
+          Invoke-WebRequest `
+            -UseBasicParsing `
+            -Uri 'https://raw.githubusercontent.com/chromium/chromium/91.0.4472.164/net/base/net_error_list.h' `
+            -OutFile $netErrorList
+          $expectedSha256 = '3D0AE9C72E7420C2FD7A963FFB08AF5A9BADE4CFE0CE434B6154E976702053FC'
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 $netErrorList).Hash
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "Unexpected Chromium net_error_list.h SHA-256: $actualSha256"
+          }
+
       - name: Publish connector
         shell: pwsh
         run: |

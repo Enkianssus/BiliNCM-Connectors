@@ -19,7 +19,7 @@ new BiliNCM core release.
 All connectors use newline-delimited JSON on standard input/output. Protocol
 version 1 supports `ping`, `probe`, `search`, `execute`, and `shutdown`.
 Optional features are negotiated independently, so adding one does not break
-older cores or connectors. NetEase `3.1.37.205354.4` advertises
+older cores or connectors. NetEase `3.1.37.205354.5` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
@@ -96,7 +96,7 @@ hash change is rejected without calling the unknown ABI.
 The three desktop-player connectors use player-scoped versions whose final
 component is the connector revision:
 
-- NetEase `3.1.37.205354` -> connector `3.1.37.205354.4`
+- NetEase `3.1.37.205354` -> connector `3.1.37.205354.5`
 - KuGou `20.0.81.27563` -> connector `20.0.81.3`
 - QQ Music `22.41` -> connector `22.41.4`
 
