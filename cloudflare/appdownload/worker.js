@@ -928,6 +928,37 @@ async function resolveLatestChannelTag(repo, versionPrefix) {
     return cached.text();
   }
 
+  let tag;
+  let apiError;
+  try {
+    tag = await resolveLatestChannelTagFromApi(repo, versionPrefix);
+  } catch (error) {
+    apiError = error;
+  }
+
+  if (!tag) {
+    try {
+      tag = await resolveLatestChannelTagFromAtom(repo, versionPrefix);
+    } catch (atomError) {
+      throw new Error(
+        `${String(apiError?.message || apiError || 'GitHub API 查询失败')}；`
+        + `Atom 兜底失败：${String(atomError?.message || atomError)}`
+      );
+    }
+  }
+
+  await cache.put(
+    cacheKey,
+    new Response(tag, {
+      headers: {
+        'Cache-Control': 'public, max-age=900'
+      }
+    })
+  );
+  return tag;
+}
+
+async function resolveLatestChannelTagFromApi(repo, versionPrefix) {
   const response = await fetch(
     `https://api.github.com/repos/${repo}/releases?per_page=50`,
     {
@@ -942,30 +973,58 @@ async function resolveLatestChannelTag(repo, versionPrefix) {
   }
 
   const releases = await response.json();
-  const prefix = `v${versionPrefix}`;
-  const matches = releases
+  const tag = selectLatestStableChannelTag(
+    releases
     .filter(release =>
       !release.draft
       && !release.prerelease
-      && String(release.tag_name || '').startsWith(prefix)
     )
-    .sort((left, right) =>
-      compareSemanticVersions(right.tag_name, left.tag_name)
-    );
-  if (matches.length === 0) {
+    .map(release => String(release.tag_name || '')),
+    versionPrefix
+  );
+  if (!tag) {
     throw new Error(`没有找到 ${versionPrefix}x 发布版本`);
   }
-
-  const tag = String(matches[0].tag_name);
-  await cache.put(
-    cacheKey,
-    new Response(tag, {
-      headers: {
-        'Cache-Control': 'public, max-age=300'
-      }
-    })
-  );
   return tag;
+}
+
+async function resolveLatestChannelTagFromAtom(repo, versionPrefix) {
+  const response = await fetch(
+    `https://github.com/${repo}/releases.atom`,
+    {
+      headers: {
+        Accept: 'application/atom+xml',
+        'User-Agent': 'AwooMusicBot-Release-Channel/1.1'
+      }
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub Releases Atom 查询失败：HTTP ${response.status}`);
+  }
+
+  const atom = await response.text();
+  const tags = Array.from(
+    atom.matchAll(/\/releases\/tag\/([^"<]+)["<]/gi),
+    match => decodeURIComponent(match[1])
+  );
+  const tag = selectLatestStableChannelTag(tags, versionPrefix);
+  if (!tag) {
+    throw new Error(`没有找到 ${versionPrefix}x 发布版本`);
+  }
+  return tag;
+}
+
+function selectLatestStableChannelTag(tags, versionPrefix) {
+  const escapedPrefix = String(versionPrefix)
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const stableTag = new RegExp(
+    `^v${escapedPrefix}[0-9]+(?:\\.[0-9]+)*$`,
+    'i'
+  );
+  return tags
+    .filter(tag => stableTag.test(String(tag)))
+    .sort((left, right) => compareSemanticVersions(right, left))[0]
+    || null;
 }
 
 function compareSemanticVersions(left, right) {
