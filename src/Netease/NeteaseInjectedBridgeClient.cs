@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text;
+using System.Text.Json;
 
 namespace UnifiedPlayerControlPoc;
 
@@ -30,6 +31,81 @@ internal static class NeteaseInjectedBridgeClient
 
     public static NeteaseBridgeCommandResult AddNext(string songId) =>
         Send($"ADD_NEXT {songId}");
+
+    public static NeteaseBridgeTrackEvent ReadLatestTrackEvent()
+    {
+        lock (RequestSync)
+        {
+            var endpoint = NeteaseNativeIpc.FindEndpoint();
+            if (endpoint is null)
+            {
+                return NeteaseBridgeTrackEvent.Unavailable(
+                    "player-not-running");
+            }
+
+            var exchange = Exchange(
+                endpoint.ProcessId,
+                "GET_TRACK_EVENT",
+                300);
+            if (!exchange.Success)
+            {
+                return NeteaseBridgeTrackEvent.Unavailable(
+                    exchange.Response);
+            }
+            return ParseTrackEventResponse(exchange.Response);
+        }
+    }
+
+    public static async Task<NeteaseBridgeTrackEvent> WaitForTrackEventAsync(
+        int processId,
+        long afterSequence,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var pipe = new NamedPipeClientStream(
+                ".",
+                $"AwooNcmCefBridge-events-v{ProtocolVersion}-{processId}",
+                PipeDirection.InOut,
+                PipeOptions.Asynchronous);
+            using var timeout = CancellationTokenSource
+                .CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(35));
+            await pipe.ConnectAsync(1500, timeout.Token)
+                .ConfigureAwait(false);
+
+            var requestBytes = Encoding.UTF8.GetBytes(
+                $"WAIT_EVENT {Math.Max(0, afterSequence)} 30000\n");
+            await pipe.WriteAsync(requestBytes, timeout.Token)
+                .ConfigureAwait(false);
+            await pipe.FlushAsync(timeout.Token).ConfigureAwait(false);
+
+            using var reader = new StreamReader(
+                pipe,
+                Encoding.UTF8,
+                false,
+                1024,
+                leaveOpen: true);
+            var response = await reader.ReadLineAsync(timeout.Token)
+                .ConfigureAwait(false)
+                ?? string.Empty;
+            return ParseTrackEventResponse(response.Trim());
+        }
+        catch (OperationCanceledException)
+            when (!cancellationToken.IsCancellationRequested)
+        {
+            return NeteaseBridgeTrackEvent.Unavailable(
+                "event-stream-timeout");
+        }
+        catch (Exception exception)
+            when (exception is TimeoutException
+                  or IOException
+                  or InvalidOperationException)
+        {
+            return NeteaseBridgeTrackEvent.Unavailable(
+                $"event-stream-unavailable: {exception.Message}");
+        }
+    }
 
     public static NeteaseBridgeStatus Probe()
     {
@@ -191,6 +267,132 @@ internal static class NeteaseInjectedBridgeClient
     private sealed record BridgeExchangeResult(
         bool Success,
         string Response);
+
+    private static NeteaseBridgeTrackEvent ParseTrackEventResponse(
+        string response)
+    {
+        var parts = response.Split(
+            ' ',
+            5,
+            StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 3
+            && parts[0] == "OK"
+            && parts[1] is "NO_EVENT" or "NO_CHANGE")
+        {
+            return NeteaseBridgeTrackEvent.Unavailable(
+                parts[1].Equals("NO_CHANGE", StringComparison.Ordinal)
+                    ? "event-stream-no-change"
+                    : "watcher-initializing");
+        }
+        if (parts.Length != 5
+            || parts[0] != "OK"
+            || parts[1] != "EVENT"
+            || !long.TryParse(parts[2], out var sequence)
+            || !long.TryParse(parts[3], out var ageMilliseconds))
+        {
+            return NeteaseBridgeTrackEvent.Unavailable(response);
+        }
+
+        try
+        {
+            var json = Encoding.UTF8.GetString(
+                Convert.FromBase64String(parts[4]));
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            return new NeteaseBridgeTrackEvent(
+                true,
+                sequence,
+                Math.Max(0, ageMilliseconds),
+                ReadJsonString(root, "type"),
+                ReadJsonString(root, "title"),
+                ReadJsonString(root, "trackId"),
+                ReadJsonString(root, "name"),
+                ReadJsonString(root, "artist"),
+                ReadJsonString(root, "album"),
+                ReadJsonString(root, "coverUrl"),
+                ReadJsonString(root, "nextTrackId"),
+                ReadJsonString(root, "nextName"),
+                ReadJsonString(root, "nextArtist"),
+                ReadJsonString(root, "nextAlbum"),
+                ReadJsonString(root, "nextCoverUrl"),
+                ReadJsonLong(root, "at"),
+                json);
+        }
+        catch (Exception exception)
+            when (exception is FormatException
+                  or JsonException
+                  or DecoderFallbackException)
+        {
+            return NeteaseBridgeTrackEvent.Unavailable(
+                $"invalid-event: {exception.Message}");
+        }
+    }
+
+    private static string ReadJsonString(
+        JsonElement element,
+        string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value))
+        {
+            return string.Empty;
+        }
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString() ?? string.Empty,
+            JsonValueKind.Number => value.GetRawText(),
+            _ => string.Empty
+        };
+    }
+
+    private static long ReadJsonLong(
+        JsonElement element,
+        string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var value)
+               && value.TryGetInt64(out var result)
+            ? result
+            : 0;
+    }
+}
+
+internal sealed record NeteaseBridgeTrackEvent(
+    bool Available,
+    long Sequence,
+    long AgeMilliseconds,
+    string Type,
+    string WindowTitle,
+    string TrackId,
+    string Name,
+    string Artist,
+    string Album,
+    string CoverUrl,
+    string NextTrackId,
+    string NextName,
+    string NextArtist,
+    string NextAlbum,
+    string NextCoverUrl,
+    long BrowserTimestamp,
+    string RawJson)
+{
+    public static NeteaseBridgeTrackEvent Unavailable(string details) =>
+        new(
+            false,
+            0,
+            long.MaxValue,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            0,
+            details);
 }
 
 internal sealed record NeteaseBridgeStatus(

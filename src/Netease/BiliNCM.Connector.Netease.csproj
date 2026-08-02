@@ -3,8 +3,8 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>BiliNCM.Connector.Netease</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
-    <Version>1.2.0</Version>
-    <InformationalVersion>$(Version)</InformationalVersion>
+    <Version>3.1.37.4</Version>
+    <InformationalVersion>3.1.37.205354.4</InformationalVersion>
     <PlatformTarget>x64</PlatformTarget>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
@@ -24,5 +24,6 @@
     <Compile Include="..\Shared\ConnectorRuntime.cs" Link="Shared\ConnectorRuntime.cs" />
     <Compile Include="..\Shared\PlayerContracts.cs" Link="Shared\PlayerContracts.cs" />
     <Compile Include="..\Shared\GuardedNextMonitor.cs" Link="Shared\GuardedNextMonitor.cs" />
+    <Compile Include="..\Shared\SongQueryPolicy.cs" Link="Shared\SongQueryPolicy.cs" />
   </ItemGroup>
 </Project>

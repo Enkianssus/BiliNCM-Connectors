@@ -7,6 +7,9 @@ namespace UnifiedPlayerControlPoc;
 internal static class ConnectorRuntime
 {
     private const int ProtocolVersion = 1;
+    private const int EventProtocolVersion = 1;
+    private const string SnapshotEventsFeature = "snapshot-events-v1";
+    private static readonly SemaphoreSlim OutputGate = new(1, 1);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -25,6 +28,9 @@ internal static class ConnectorRuntime
         Console.InputEncoding = System.Text.Encoding.UTF8;
         Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+        using var lifetimeCancellation = new CancellationTokenSource();
+        Task? eventPump = null;
+        var eventSource = adapter as IPlayerSnapshotEventSource;
         try
         {
             string? line;
@@ -72,11 +78,60 @@ internal static class ConnectorRuntime
                             new
                             {
                                 protocolVersion = ProtocolVersion,
+                                eventProtocolVersion = eventSource is null
+                                    ? (int?)null
+                                    : EventProtocolVersion,
                                 connectorId,
                                 connectorVersion = GetVersion(),
-                                capabilities = adapter.Capabilities
+                                capabilities = adapter.Capabilities,
+                                features = eventSource is null
+                                    ? Array.Empty<string>()
+                                    : new[] { SnapshotEventsFeature }
                             },
                             null));
+                        continue;
+                    }
+
+                    if (request.Action.Equals(
+                            "subscribe",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (eventSource is null)
+                        {
+                            await WriteResponseAsync(new ConnectorResponse(
+                                request.Id,
+                                true,
+                                new
+                                {
+                                    subscribed = false,
+                                    reason = "snapshot-events-unsupported"
+                                },
+                                null));
+                            continue;
+                        }
+                        if (request.EventProtocolVersion is not null
+                            && request.EventProtocolVersion
+                                != EventProtocolVersion)
+                        {
+                            throw new InvalidOperationException(
+                                "Unsupported event protocol version: "
+                                + request.EventProtocolVersion);
+                        }
+
+                        await WriteResponseAsync(new ConnectorResponse(
+                            request.Id,
+                            true,
+                            new
+                            {
+                                subscribed = true,
+                                eventProtocolVersion = EventProtocolVersion,
+                                feature = SnapshotEventsFeature
+                            },
+                            null));
+                        eventPump ??= PumpSnapshotEventsAsync(
+                            connectorId,
+                            eventSource,
+                            lifetimeCancellation.Token);
                         continue;
                     }
 
@@ -113,6 +168,18 @@ internal static class ConnectorRuntime
         }
         finally
         {
+            lifetimeCancellation.Cancel();
+            if (eventPump is not null)
+            {
+                try
+                {
+                    await eventPump.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Normal connector shutdown.
+                }
+            }
             await adapter.DisposeAsync();
         }
 
@@ -197,9 +264,66 @@ internal static class ConnectorRuntime
     private static async Task WriteResponseAsync(
         ConnectorResponse response)
     {
-        var json = JsonSerializer.Serialize(response, JsonOptions);
-        await Console.Out.WriteLineAsync(json);
-        await Console.Out.FlushAsync();
+        await WriteEnvelopeAsync(response, CancellationToken.None);
+    }
+
+    private static async Task PumpSnapshotEventsAsync(
+        string connectorId,
+        IPlayerSnapshotEventSource eventSource,
+        CancellationToken cancellationToken)
+    {
+        long sequence = 0;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await foreach (var snapshot in eventSource
+                                   .WatchSnapshotsAsync(cancellationToken)
+                                   .WithCancellation(cancellationToken)
+                                   .ConfigureAwait(false))
+                {
+                    await WriteEnvelopeAsync(
+                        new ConnectorEvent(
+                            "event",
+                            "snapshot",
+                            connectorId,
+                            ++sequence,
+                            snapshot),
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                await Console.Error.WriteLineAsync(
+                    $"snapshot event source restarting: "
+                    + $"{exception.GetType().Name}: {exception.Message}");
+            }
+
+            await Task.Delay(1000, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private static async Task WriteEnvelopeAsync(
+        object envelope,
+        CancellationToken cancellationToken)
+    {
+        var json = JsonSerializer.Serialize(envelope, JsonOptions);
+        await OutputGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await Console.Out.WriteLineAsync(json).ConfigureAwait(false);
+            await Console.Out.FlushAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            OutputGate.Release();
+        }
     }
 
     private sealed record ConnectorRequest(
@@ -208,11 +332,19 @@ internal static class ConnectorRuntime
         string? Player,
         string? Query,
         string? Command,
-        PlayerTrack? Track);
+        PlayerTrack? Track,
+        int? EventProtocolVersion);
 
     private sealed record ConnectorResponse(
         string Id,
         bool Ok,
         object? Result,
         string? Error);
+
+    private sealed record ConnectorEvent(
+        string Type,
+        string Event,
+        string Player,
+        long Sequence,
+        PlayerSnapshot Snapshot);
 }

@@ -20,19 +20,23 @@ if (!connectorId || !version || !assetName || !sha256 || !signature || !runtime)
 const supported = {
   netease: {
     name: '网易云音乐',
-    playerVersionPolicy: '3.1.*'
+    playerVersionPolicy: '3.1.*',
+    testedPlayerVersion: '3.1.37.205354'
   },
   kugou: {
     name: '酷狗音乐',
-    playerVersionPolicy: '20.*'
+    playerVersionPolicy: '20.*',
+    testedPlayerVersion: '20.0.81.27563'
   },
   qqmusic: {
     name: 'QQ音乐',
-    playerVersionPolicy: '22.*'
+    playerVersionPolicy: '22.*',
+    testedPlayerVersion: '22.22 / 22.41'
   },
   folia: {
     name: 'Folia',
-    playerVersionPolicy: 'Stage API'
+    playerVersionPolicy: 'Stage API',
+    testedPlayerVersion: 'Stage API'
   }
 };
 
@@ -53,6 +57,7 @@ catalog.connectors[connectorId] = {
   protocolVersion: 1,
   minimumCoreVersion: '1.1.0',
   playerVersionPolicy: supported[connectorId].playerVersionPolicy,
+  testedPlayerVersion: supported[connectorId].testedPlayerVersion,
   runtime,
   asset: assetName,
   size: Number(sizeText),

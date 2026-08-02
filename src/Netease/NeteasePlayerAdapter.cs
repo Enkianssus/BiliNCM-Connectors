@@ -1,13 +1,17 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace UnifiedPlayerControlPoc;
 
-internal sealed class NeteasePlayerAdapter : IPlayerAdapter
+internal sealed class NeteasePlayerAdapter :
+    IPlayerAdapter,
+    IPlayerSnapshotEventSource
 {
     private readonly HttpClient _httpClient = new()
     {
@@ -24,6 +28,12 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
     private Task<NeteaseBridgeInstallResult>? _bridgeInstallTask;
     private int? _bridgeInstallProcessId;
     private DateTime _bridgeRetryAfterUtc = DateTime.MinValue;
+    private int? _eventProcessId;
+    private long _lastBridgeEventSequence;
+    private PlayerTrack? _lastObservedCurrent;
+    private PlayerTrack? _lastObservedNext;
+    private string _lastObservedTitle = string.Empty;
+    private DateTime _lastWindowTitleReadUtc = DateTime.MinValue;
 
     private static readonly string PlayingListPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -88,24 +98,98 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         };
     }
 
+    public async IAsyncEnumerable<PlayerSnapshot> WatchSnapshotsAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        int? observedProcessId = null;
+        long afterSequence = 0;
+        var offlineReported = false;
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var endpoint = NeteaseNativeIpc.FindEndpoint();
+            if (endpoint is null)
+            {
+                observedProcessId = null;
+                afterSequence = 0;
+                if (!offlineReported)
+                {
+                    offlineReported = true;
+                    yield return await ProbeAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                await Task.Delay(1000, cancellationToken)
+                    .ConfigureAwait(false);
+                continue;
+            }
+
+            offlineReported = false;
+            if (observedProcessId != endpoint.ProcessId)
+            {
+                observedProcessId = endpoint.ProcessId;
+                afterSequence = 0;
+                // This initial probe also starts bridge installation for a
+                // newly launched player. It is not a repeating track poll.
+                yield return await ProbeAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            var bridgeEvent = await NeteaseInjectedBridgeClient
+                .WaitForTrackEventAsync(
+                    endpoint.ProcessId,
+                    afterSequence,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (bridgeEvent.Available)
+            {
+                afterSequence = Math.Max(
+                    afterSequence,
+                    bridgeEvent.Sequence);
+                yield return await ProbeAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                continue;
+            }
+
+            // A healthy watcher sends a Redux heartbeat every 15 seconds, so
+            // a 30-second long-poll timeout means the bridge needs a health
+            // probe/reinstall attempt. Legacy bridges without the event pipe
+            // also arrive here and retain the old safe request path.
+            yield return await ProbeAsync(cancellationToken)
+                .ConfigureAwait(false);
+            await Task.Delay(1000, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
     public async Task<IReadOnlyList<PlayerTrack>> SearchAsync(
         string query,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
         var trimmedQuery = query.Trim();
-        var idMatch = Regex.Match(
-            trimmedQuery,
-            "^(?:id\\s*=\\s*)?([0-9]+)$",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (!idMatch.Success)
+        var classified = SongQueryPolicy.ParseNetease(trimmedQuery);
+        if (classified.Kind == NeteaseSongQueryKind.Keyword)
         {
             return await SearchByKeywordAsync(
-                trimmedQuery,
+                classified.Value,
                 cancellationToken).ConfigureAwait(false);
         }
 
-        var songId = idMatch.Groups[1].Value;
+        var songId = classified.Value;
+        if (classified.Kind == NeteaseSongQueryKind.ExplicitId)
+        {
+            var explicitTrack = await TryResolveSongIdAsync(
+                songId,
+                cancellationToken).ConfigureAwait(false);
+            if (explicitTrack is null)
+            {
+                return [];
+            }
+
+            RegisterKnownTrack(explicitTrack);
+            return [explicitTrack];
+        }
+
         var keywordTask = SearchByKeywordAsync(songId, cancellationToken);
         var exactTrack = await TryResolveSongIdAsync(
             songId,
@@ -173,9 +257,8 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         {
             using var request = new HttpRequestMessage(
                 HttpMethod.Get,
-                "https://music.163.com/api/song/detail/"
-                + $"?id={Uri.EscapeDataString(songId)}"
-                + $"&ids={Uri.EscapeDataString($"[{songId}]")}");
+                "https://music.163.com/api/v3/song/detail"
+                + $"?c={Uri.EscapeDataString($"[{{\"id\":{songId}}}]")}");
             request.Headers.Referrer = new Uri("https://music.163.com/");
             request.Headers.TryAddWithoutValidation(
                 "X-Real-IP",
@@ -197,6 +280,12 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
             using var document = await JsonDocument.ParseAsync(
                 stream,
                 cancellationToken: timeout.Token).ConfigureAwait(false);
+            if (document.RootElement.TryGetProperty("code", out var code)
+                && code.TryGetInt32(out var codeValue)
+                && codeValue != 200)
+            {
+                return null;
+            }
             if (!document.RootElement.TryGetProperty("songs", out var songs)
                 || songs.ValueKind != JsonValueKind.Array)
             {
@@ -486,6 +575,199 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         return ValueTask.CompletedTask;
     }
 
+    private PlayerTrack? ReadEventFirstCurrent(
+        int processId,
+        out string observedTitle,
+        out string observationSource,
+        out PlayerTrack? eventNext)
+    {
+        lock (_trackSync)
+        {
+            if (_eventProcessId != processId)
+            {
+                _eventProcessId = processId;
+                _lastBridgeEventSequence = 0;
+                _lastObservedCurrent = null;
+                _lastObservedNext = null;
+                _lastObservedTitle = string.Empty;
+                _lastWindowTitleReadUtc = DateTime.MinValue;
+            }
+        }
+
+        var bridgeEvent =
+            NeteaseInjectedBridgeClient.ReadLatestTrackEvent();
+        if (bridgeEvent.Available)
+        {
+            var shouldApply = false;
+            lock (_trackSync)
+            {
+                if (bridgeEvent.Sequence > _lastBridgeEventSequence)
+                {
+                    _lastBridgeEventSequence = bridgeEvent.Sequence;
+                    shouldApply = true;
+                }
+            }
+
+            if (shouldApply)
+            {
+                var isReduxEvent = bridgeEvent.Type.StartsWith(
+                    "redux:",
+                    StringComparison.Ordinal);
+                var eventTrack = CreateBridgeTrack(
+                        bridgeEvent.TrackId,
+                        bridgeEvent.Name,
+                        bridgeEvent.Artist,
+                        bridgeEvent.Album,
+                        bridgeEvent.CoverUrl)
+                    ?? FindTrackById(bridgeEvent.TrackId);
+                var nextTrack = CreateBridgeTrack(
+                        bridgeEvent.NextTrackId,
+                        bridgeEvent.NextName,
+                        bridgeEvent.NextArtist,
+                        bridgeEvent.NextAlbum,
+                        bridgeEvent.NextCoverUrl)
+                    ?? FindTrackById(bridgeEvent.NextTrackId);
+                var eventTitle = isReduxEvent && eventTrack is not null
+                    ? eventTrack.DisplayName
+                    : string.Empty;
+                if (!isReduxEvent
+                    && !bridgeEvent.Type.Equals(
+                        "heartbeat",
+                        StringComparison.Ordinal)
+                    && !bridgeEvent.Type.Equals(
+                        "ready",
+                        StringComparison.Ordinal)
+                    && !bridgeEvent.Type.Equals(
+                        "ensure",
+                        StringComparison.Ordinal))
+                {
+                    eventTitle = NeteaseNativeIpc.FindPlayerWindowTitle(
+                        processId);
+                    eventTrack ??= MatchWindowTitle(eventTitle)
+                        ?? CreateTitleFallback(eventTitle);
+                }
+                if (eventTrack is not null
+                    && !string.IsNullOrWhiteSpace(eventTrack.Id))
+                {
+                    RegisterKnownTrack(eventTrack);
+                }
+                if (nextTrack is not null
+                    && !string.IsNullOrWhiteSpace(nextTrack.Id))
+                {
+                    RegisterKnownTrack(nextTrack);
+                }
+                lock (_trackSync)
+                {
+                    if (!string.IsNullOrWhiteSpace(eventTitle))
+                    {
+                        _lastObservedTitle = eventTitle;
+                    }
+                    if (eventTrack is not null)
+                    {
+                        _lastObservedCurrent = eventTrack;
+                    }
+                    if (isReduxEvent)
+                    {
+                        _lastObservedNext = nextTrack;
+                    }
+                }
+            }
+        }
+
+        PlayerTrack? cachedCurrent;
+        PlayerTrack? cachedNext;
+        string cachedTitle;
+        DateTime lastFallbackRead;
+        lock (_trackSync)
+        {
+            cachedCurrent = _lastObservedCurrent;
+            cachedNext = _lastObservedNext;
+            cachedTitle = _lastObservedTitle;
+            lastFallbackRead = _lastWindowTitleReadUtc;
+        }
+
+        var now = DateTime.UtcNow;
+        var eventIsHealthy = bridgeEvent.Available
+            && bridgeEvent.AgeMilliseconds <= 30000;
+        var fallbackInterval = eventIsHealthy
+            ? TimeSpan.FromMinutes(5)
+            : TimeSpan.FromSeconds(2);
+        var shouldReadWindowTitle = cachedCurrent is null
+            || now - lastFallbackRead >= fallbackInterval;
+        if (shouldReadWindowTitle)
+        {
+            var fallbackTitle = NeteaseNativeIpc.FindPlayerWindowTitle(
+                processId);
+            var fallbackCurrent = MatchWindowTitle(fallbackTitle)
+                ?? CreateTitleFallback(fallbackTitle);
+            lock (_trackSync)
+            {
+                _lastWindowTitleReadUtc = now;
+                if (!string.IsNullOrWhiteSpace(fallbackTitle))
+                {
+                    _lastObservedTitle = fallbackTitle;
+                    cachedTitle = fallbackTitle;
+                }
+                if (fallbackCurrent is not null)
+                {
+                    _lastObservedCurrent = fallbackCurrent;
+                    cachedCurrent = fallbackCurrent;
+                }
+            }
+            observationSource = eventIsHealthy
+                ? "cef-redux-event+5m-health-check"
+                : "window-title-fallback";
+        }
+        else
+        {
+            observationSource = eventIsHealthy
+                ? $"cef-event:{bridgeEvent.Type}"
+                : "cached-state";
+        }
+
+        observedTitle = cachedTitle;
+        eventNext = cachedNext;
+        return cachedCurrent;
+    }
+
+    private static PlayerTrack? CreateBridgeTrack(
+        string id,
+        string title,
+        string artist,
+        string album,
+        string coverUrl)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+        return new PlayerTrack(
+            id.Trim(),
+            string.IsNullOrWhiteSpace(title) ? "未知歌曲" : title.Trim(),
+            artist.Trim(),
+            album.Trim(),
+            string.Empty,
+            coverUrl.Trim());
+    }
+
+    private PlayerTrack? FindTrackById(string trackId)
+    {
+        if (string.IsNullOrWhiteSpace(trackId))
+        {
+            return null;
+        }
+        lock (_trackSync)
+        {
+            if (_knownTracks.TryGetValue(trackId, out var known))
+            {
+                return known;
+            }
+            return _playingList
+                .Select(item => item.Track)
+                .FirstOrDefault(track => track.Id == trackId);
+        }
+    }
+
     private PlayerSnapshot ReadSnapshot()
     {
         var endpoint = NeteaseNativeIpc.FindEndpoint();
@@ -502,9 +784,11 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
         }
 
         RefreshPlayingListIfNeeded();
-        var windowTitle = NeteaseNativeIpc.FindPlayerWindowTitle(
-            endpoint.ProcessId);
-        var current = MatchWindowTitle(windowTitle);
+        var current = ReadEventFirstCurrent(
+            endpoint.ProcessId,
+            out var windowTitle,
+            out var observationSource,
+            out var eventNext);
         var version = NeteaseNativeIpc.TryGetProcessVersion(
             endpoint.ProcessId);
         var status = string.IsNullOrWhiteSpace(windowTitle)
@@ -517,14 +801,23 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
             status += $"；{_nextGuard.Status}";
         }
 
+        status += $"；状态源={observationSource}";
+        var observedCurrent = current ?? CreateTitleFallback(windowTitle);
+        var observedNext = eventNext ?? ResolveSequentialNext(observedCurrent);
         return new PlayerSnapshot(
             true,
             DisplayName,
             endpoint.ProcessId,
             version,
             status,
-            current ?? CreateTitleFallback(windowTitle),
-            DateTimeOffset.Now);
+            observedCurrent,
+            DateTimeOffset.Now,
+            observedNext,
+            observedNext is null
+                ? string.Empty
+                : eventNext is null
+                    ? "playingList/sequential"
+                    : "cef-redux-event");
     }
 
     private bool ArmNextGuard(
@@ -556,9 +849,11 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
             }
 
             RefreshPlayingListIfNeeded();
-            var title = NeteaseNativeIpc.FindPlayerWindowTitle(
-                endpoint.ProcessId);
-            return MatchWindowTitle(title) ?? CreateTitleFallback(title);
+            return ReadEventFirstCurrent(
+                endpoint.ProcessId,
+                out _,
+                out _,
+                out _);
         }, cancellationToken);
     }
 
@@ -689,10 +984,33 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
             return exact[0];
         }
 
-        var nameOnly = candidates
-            .Where(track => NormalizeTitle(track.Title) == normalizedTitle)
+        var titleFallback = CreateTitleFallback(title);
+        if (titleFallback is null)
+        {
+            return null;
+        }
+
+        var titleMatches = candidates
+            .Where(track =>
+                NormalizeTitle(track.Title)
+                == NormalizeTitle(titleFallback.Title))
             .ToArray();
-        return nameOnly.Length == 1 ? nameOnly[0] : null;
+        if (titleMatches.Length == 1)
+        {
+            return titleMatches[0];
+        }
+
+        if (string.IsNullOrWhiteSpace(titleFallback.Artist))
+        {
+            return null;
+        }
+
+        var artistMatches = titleMatches
+            .Where(track =>
+                NormalizeArtist(track.Artist)
+                == NormalizeArtist(titleFallback.Artist))
+            .ToArray();
+        return artistMatches.Length == 1 ? artistMatches[0] : null;
     }
 
     private static PlayerTrack? CreateTitleFallback(string title)
@@ -826,9 +1144,45 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
             cover = ReadJsonText(album, "cover");
         }
 
+        if (string.IsNullOrWhiteSpace(cover))
+        {
+            var picId = ReadJsonText(album, "picId_str");
+            if (string.IsNullOrWhiteSpace(picId))
+            {
+                picId = ReadJsonText(album, "pic_str");
+            }
+            if (string.IsNullOrWhiteSpace(picId))
+            {
+                picId = ReadJsonText(album, "picId");
+            }
+            cover = BuildCoverUrlFromPicId(picId);
+        }
+
         return cover.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
             ? $"https://{cover[7..]}"
             : cover;
+    }
+
+    private static string BuildCoverUrlFromPicId(string picId)
+    {
+        if (string.IsNullOrWhiteSpace(picId)
+            || !picId.All(char.IsDigit))
+        {
+            return string.Empty;
+        }
+
+        const string magic = "3go8&$8*3*3h0k(2)2";
+        var source = Encoding.ASCII.GetBytes(picId);
+        var key = Encoding.ASCII.GetBytes(magic);
+        for (var index = 0; index < source.Length; index++)
+        {
+            source[index] ^= key[index % key.Length];
+        }
+
+        var token = Convert.ToBase64String(MD5.HashData(source))
+            .Replace('/', '_')
+            .Replace('+', '-');
+        return $"https://p1.music.126.net/{token}/{picId}.jpg";
     }
 
     private static string ReadJsonText(
@@ -860,6 +1214,14 @@ internal sealed class NeteasePlayerAdapter : IPlayerAdapter
                     (char[]?)null,
                     StringSplitOptions.TrimEntries
                     | StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    private static string NormalizeArtist(string value)
+    {
+        return string.Concat(
+            value.Normalize(NormalizationForm.FormKC)
+                .Where(char.IsLetterOrDigit))
+            .ToUpperInvariant();
     }
 
     private static bool TrackMatches(

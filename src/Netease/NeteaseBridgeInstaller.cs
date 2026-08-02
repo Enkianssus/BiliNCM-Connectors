@@ -115,8 +115,8 @@ internal static class NeteaseBridgeInstaller
             Path.GetDirectoryName(playerPath)
                 ?? string.Empty,
             "libcef.dll");
-        if (!playerVersion.Equals(
-                SupportedPlayerVersion,
+        if (!playerVersion.StartsWith(
+                "3.1.",
                 StringComparison.Ordinal)
             || !File.Exists(cefPath))
         {
@@ -124,26 +124,29 @@ internal static class NeteaseBridgeInstaller
                 false,
                 false,
                 endpoint.ProcessId,
-                "网易云或 CEF 版本不在当前安全白名单，已拒绝注入。",
+                "网易云不属于当前可探测的 3.1 系列，或 CEF 文件不存在，"
+                + "已拒绝注入。",
                 $"player={playerVersion}, cef={cefPath}");
         }
 
         var playerHash = ComputeSha256(playerPath);
         var cefHash = ComputeSha256(cefPath);
-        if (!playerHash.Equals(
+        var exactTestedBuild = playerVersion.Equals(
+                SupportedPlayerVersion,
+                StringComparison.Ordinal)
+            && playerHash.Equals(
                 SupportedPlayerSha256,
                 StringComparison.OrdinalIgnoreCase)
-            || !cefHash.Equals(
+            && cefHash.Equals(
                 SupportedCefSha256,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return Finish(
-                false,
-                false,
-                endpoint.ProcessId,
-                "网易云或 libcef.dll 哈希不匹配，已拒绝注入。",
-                $"playerSha256={playerHash}, cefSha256={cefHash}");
-        }
+                StringComparison.OrdinalIgnoreCase);
+        var validationContext = exactTestedBuild
+            ? "exact-tested-build"
+            : "unknown-3.1-build; native bridge must match CEF major + both API hashes "
+              + "and pass host/runtime probes"
+              + $"; player={playerVersion}"
+              + $"; playerSha256={playerHash}"
+              + $"; cefSha256={cefHash}";
 
         var bridgePath = Path.Combine(
             AppContext.BaseDirectory,
@@ -307,8 +310,11 @@ internal static class NeteaseBridgeInstaller
                     true,
                     true,
                     endpoint.ProcessId,
-                    "CEF 桥已加载并连接到存活的内部 DevTools 宿主。",
-                    status.Details);
+                    exactTestedBuild
+                        ? "CEF 桥已加载并连接到存活的内部 DevTools 宿主。"
+                        : "未知 3.1 小版本已通过 CEF ABI、宿主结构和内部 "
+                          + "DevTools 运行探测，CEF 桥已连接。",
+                    $"{validationContext}; {status.Details}");
             }
         }
 
@@ -319,7 +325,7 @@ internal static class NeteaseBridgeInstaller
             "CEF 桥 DLL 已加载，但尚未取得可用的 CEF 宿主。"
             + "请确认网易云主界面已经完整加载；"
             + "当前不会发送任何播放命令。",
-            status.Details);
+            $"{validationContext}; {status.Details}");
 
         NeteaseBridgeInstallResult Finish(
             bool success,
@@ -592,4 +598,3 @@ internal static class NeteaseBridgeInstaller
         nint window,
         out int processId);
 }
-

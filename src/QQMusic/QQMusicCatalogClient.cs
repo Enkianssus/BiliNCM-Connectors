@@ -73,12 +73,16 @@ internal sealed class QQMusicCatalogClient : IDisposable
             }
         }
 
-        return songs.Count > 0
-            ? songs
-            : await SearchLegacyAsync(
+        if (songs.Count > 0)
+        {
+            return BackfillMissingAlbumArtwork(songs);
+        }
+
+        var legacySongs = await SearchLegacyAsync(
                 query,
                 count,
                 cancellationToken).ConfigureAwait(false);
+        return BackfillMissingAlbumArtwork(legacySongs);
     }
 
     public async Task<string> SearchRawAsync(
@@ -274,6 +278,30 @@ internal sealed class QQMusicCatalogClient : IDisposable
             checked((int)ReadInt64(item, "interval")),
             playable);
         return true;
+    }
+
+    private static IReadOnlyList<QQMusicCatalogSong>
+        BackfillMissingAlbumArtwork(
+            IReadOnlyList<QQMusicCatalogSong> songs)
+    {
+        var artworkCandidates = songs
+            .Select(song => new QQMusicAlbumArtworkCandidate(
+                song.Title,
+                song.Artist,
+                song.Album,
+                song.AlbumMid))
+            .ToArray();
+
+        return songs
+            .Select(song => song with
+            {
+                AlbumMid = QQMusicAlbumArtwork.SelectPictureId(
+                    song.AlbumMid,
+                    song.Title,
+                    song.Artist,
+                    artworkCandidates)
+            })
+            .ToArray();
     }
 
     private static bool TryGetProperty(

@@ -79,11 +79,11 @@ internal static class QQMusicNativeController
                 DateTimeOffset.Now);
         }
 
-        var (title, artist) = ParseTrack(window.Title);
+        var parsed = QQMusicWindowTitleParser.Parse(window.Title);
         return new QQMusicPlaybackState(
             true,
-            title,
-            artist,
+            parsed?.Title,
+            parsed?.Artist,
             window.Handle,
             window.Title,
             DateTimeOffset.Now);
@@ -93,43 +93,14 @@ internal static class QQMusicNativeController
     {
         return InspectWindows()
             .Where(window => window.IsVisible)
-            .OrderByDescending(window => HasTrackTitle(window.Title))
+            .OrderByDescending(window =>
+                QQMusicWindowTitleParser.Parse(window.Title) is not null)
             .ThenByDescending(window =>
                 window.Title.Equals(
                     "QQ音乐",
                     StringComparison.OrdinalIgnoreCase))
             .ThenByDescending(window => window.Title.Length)
             .FirstOrDefault();
-    }
-
-    private static bool HasTrackTitle(string title)
-    {
-        return !string.IsNullOrWhiteSpace(title)
-            && !title.Equals(
-                "QQ音乐",
-                StringComparison.OrdinalIgnoreCase)
-            && title.Contains(" - ", StringComparison.Ordinal);
-    }
-
-    private static (string? Title, string? Artist) ParseTrack(
-        string windowTitle)
-    {
-        if (!HasTrackTitle(windowTitle))
-        {
-            return (null, null);
-        }
-
-        var separator = windowTitle.IndexOf(
-            " - ",
-            StringComparison.Ordinal);
-        if (separator <= 0)
-        {
-            return (windowTitle.Trim(), null);
-        }
-
-        return (
-            windowTitle[..separator].Trim(),
-            windowTitle[(separator + 3)..].Trim());
     }
 
     private static string ReadWindowText(nint handle)

@@ -8,6 +8,7 @@ internal enum PlayerCommand
     Toggle,
     Next,
     PlaySelected,
+    InterruptSelected,
     InsertNext,
     ArmNextGuard
 }
@@ -52,7 +53,10 @@ internal sealed record PlayerSnapshot(
     string Version,
     string Status,
     PlayerTrack? Current,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    PlayerTrack? Next = null,
+    string NextSource = "",
+    string? NextObservation = null);
 
 internal sealed record PlayerOperationResult(
     OperationOutcome Outcome,
@@ -84,5 +88,16 @@ internal interface IPlayerAdapter : IAsyncDisposable
     Task<PlayerOperationResult> ExecuteAsync(
         PlayerCommand command,
         PlayerTrack? track,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Optional additive protocol feature. Connectors that implement this
+/// interface can push exact snapshots to the host; older connectors and
+/// hosts continue to use the protocol-v1 request/response flow unchanged.
+/// </summary>
+internal interface IPlayerSnapshotEventSource
+{
+    IAsyncEnumerable<PlayerSnapshot> WatchSnapshotsAsync(
         CancellationToken cancellationToken);
 }

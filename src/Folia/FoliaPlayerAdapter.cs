@@ -4,11 +4,10 @@ using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace UnifiedPlayerControlPoc;
 
-internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
+internal sealed class FoliaPlayerAdapter : IPlayerAdapter
 {
     private const int StagePort = 32107;
     private const string TokenEnvironmentVariable = "BILINCM_FOLIA_TOKEN";
@@ -97,24 +96,36 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
         EnsureToken();
 
-        var trimmed = query.Trim();
-        var idMatch = NeteaseIdPattern().Match(trimmed);
-        if (!idMatch.Success)
+        var classified = SongQueryPolicy.ParseNetease(query);
+        if (classified.Kind == NeteaseSongQueryKind.Keyword)
         {
-            return await SearchStageAsync(trimmed, cancellationToken)
+            return await SearchStageAsync(
+                classified.Value,
+                cancellationToken)
                 .ConfigureAwait(false);
         }
 
-        var songId = idMatch.Groups[1].Value;
+        var songId = classified.Value;
         var exactTask = TryLookupNeteaseTrackAsync(
             songId,
             cancellationToken);
-        var searchTask = TrySearchStageAsync(songId, cancellationToken);
-        await Task.WhenAll(exactTask, searchTask).ConfigureAwait(false);
+        if (classified.Kind == NeteaseSongQueryKind.ExplicitId)
+        {
+            var explicitTrack = await exactTask.ConfigureAwait(false);
+            if (explicitTrack is null)
+            {
+                return [];
+            }
 
+            Remember(explicitTrack);
+            return [explicitTrack];
+        }
+
+        var searchTask = TrySearchStageAsync(songId, cancellationToken);
         var exact = await exactTask.ConfigureAwait(false);
         if (exact is not null)
         {
+            _ = searchTask;
             Remember(exact);
             return [exact];
         }
@@ -371,7 +382,8 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
             UpdateSnapshot(
                 true,
                 "Folia Stage WebSocket 已连接",
-                ReadSnapshot().Current);
+                ReadSnapshot().Current,
+                ReadSnapshot().Next);
             _receiveTask = ReceiveLoopAsync(socket, _lifetime.Token);
         }
         finally
@@ -457,10 +469,28 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
         }
 
         var track = ParseStageTrack(root);
+        var next = ParseExplicitNextTrack(root);
         UpdateSnapshot(
             true,
             $"Folia {eventName}",
-            track);
+            track,
+            next);
+    }
+
+    private PlayerTrack? ParseExplicitNextTrack(JsonElement payload)
+    {
+        if (TryGetProperty(payload, "next", out var next))
+        {
+            return ParseStageTrack(next);
+        }
+
+        if (TryGetProperty(payload, "data", out var data)
+            && TryGetProperty(data, "next", out next))
+        {
+            return ParseStageTrack(next);
+        }
+
+        return null;
     }
 
     private async Task<IReadOnlyList<PlayerTrack>> SearchStageAsync(
@@ -523,9 +553,8 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
         try
         {
             var uri =
-                "https://music.163.com/api/song/detail/"
-                + $"?id={Uri.EscapeDataString(songId)}"
-                + $"&ids=%5B{Uri.EscapeDataString(songId)}%5D";
+                "https://music.163.com/api/v3/song/detail"
+                + $"?c={Uri.EscapeDataString($"[{{\"id\":{songId}}}]")}";
             using var response = await _neteaseClient.GetAsync(
                 uri,
                 cancellationToken).ConfigureAwait(false);
@@ -539,6 +568,12 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
             using var document = await JsonDocument.ParseAsync(
                 stream,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (TryGetProperty(document.RootElement, "code", out var code)
+                && code.TryGetInt32(out var codeValue)
+                && codeValue != 200)
+            {
+                return null;
+            }
             if (!TryGetProperty(
                     document.RootElement,
                     "songs",
@@ -867,11 +902,12 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
     private PlayerSnapshot UpdateSnapshot(
         bool connected,
         string status,
-        PlayerTrack? current)
+        PlayerTrack? current,
+        PlayerTrack? next = null)
     {
         lock (_stateSync)
         {
-            _snapshot = CreateSnapshot(connected, status, current);
+            _snapshot = CreateSnapshot(connected, status, current, next);
             return _snapshot;
         }
     }
@@ -879,7 +915,8 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
     private static PlayerSnapshot CreateSnapshot(
         bool connected,
         string status,
-        PlayerTrack? current)
+        PlayerTrack? current,
+        PlayerTrack? next = null)
     {
         return new PlayerSnapshot(
             connected,
@@ -888,7 +925,9 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
             "Stage API",
             status,
             current,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            next,
+            next is null ? string.Empty : "stage/next");
     }
 
     private PlayerOperationResult Result(
@@ -901,8 +940,4 @@ internal sealed partial class FoliaPlayerAdapter : IPlayerAdapter
             ReadSnapshot());
     }
 
-    [GeneratedRegex(
-        @"^(?:id\s*=\s*)?(\d+)\s*$",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex NeteaseIdPattern();
 }

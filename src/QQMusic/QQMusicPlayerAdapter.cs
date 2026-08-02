@@ -1,20 +1,25 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Text.Json;
 using QQMusicControlPoc;
 
 namespace UnifiedPlayerControlPoc;
 
-internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
+internal sealed class QQMusicPlayerAdapter :
+    IPlayerAdapter,
+    IPlayerSnapshotEventSource
 {
     private static readonly TimeSpan NaturalEndPreMuteLead =
         TimeSpan.FromMilliseconds(450);
 
     private readonly QQMusicCatalogClient _catalogClient = new();
+    private readonly QQMusicEventMonitor _eventMonitor = new();
     private readonly SemaphoreSlim _operationGate = new(1, 1);
+    private readonly SemaphoreSlim _nativeNextInsertGate = new(1, 1);
     private readonly object _trackSync = new();
     private readonly object _softwareNextSync = new();
+    private readonly object _nativeNextSync = new();
     private readonly Dictionary<(long SongId, int SongType), PlayerTrack>
         _knownTracks = [];
     private readonly Dictionary<string, PlayerTrack> _resolvedCurrentTracks =
@@ -26,7 +31,15 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private CancellationTokenSource? _softwareNextCancellation;
     private Task? _softwareNextTask;
+    private readonly HashSet<Task> _softwareNextTasks = [];
+    private readonly List<PendingQqNativeNext> _pendingNativeNext = [];
+    private PlayerTrack? _softwareNextTarget;
     private volatile string _softwareNextStatus = string.Empty;
+    private string _lastObservedPlaybackKey = string.Empty;
+    private long _observedTrackSequence;
+    private int? _nativeSessionProcessId;
+    private int _snapshotSuppressionDepth;
+    private int _disposing;
     private int _cachedVersionProcessId;
     private string _cachedVersion = string.Empty;
     private int _compatibilityReportStarted;
@@ -58,6 +71,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
             var state = QQMusicNativeController.ReadPlaybackState();
             if (!state.IsRunning)
             {
+                ObserveNativeSession(null);
                 return new PlayerSnapshot(
                     false,
                     DisplayName,
@@ -73,6 +87,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
             var processId = state.WindowHandle is null
                 ? null
                 : FindProcessId(state.WindowHandle.Value);
+            ObserveNativeSession(processId);
             var version = processId is null
                 ? string.Empty
                 : GetCachedVersion(processId.Value);
@@ -86,23 +101,110 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                         state.Artist ?? string.Empty,
                         string.Empty)
                     : null);
+            var mediaTrack = _eventMonitor.ReadMediaTrack();
+            if (CurrentMetadataRepresentsSameSong(current, mediaTrack))
+            {
+                // GSMTC carries structured title/artist fields and is more
+                // reliable than splitting the QQ window caption. Only reuse
+                // it when it agrees with the current window song so a delayed
+                // media-session update cannot resurrect the previous track.
+                current = ResolveKnownTrack(
+                        mediaTrack!.Title,
+                        mediaTrack.Artist)
+                    ?? mediaTrack;
+            }
             if (current is not null
                 && string.IsNullOrWhiteSpace(current.CoverUrl))
             {
                 ScheduleArtworkLookup(current);
             }
+            ClearPendingNativeNextIfPlaying(current);
+            var guardedNext = GetSoftwareNextTarget();
             return new PlayerSnapshot(
                 true,
                 DisplayName,
                 processId,
                 version,
-                "QQMusic.exe 单实例控制可用；状态来自窗口标题"
+                "QQMusic.exe 单实例控制可用；实时状态="
+                + _eventMonitor.SourceStatus
                 + (string.IsNullOrWhiteSpace(_softwareNextStatus)
                     ? string.Empty
                     : $"；{_softwareNextStatus}"),
                 current,
-                DateTimeOffset.Now);
+                DateTimeOffset.Now,
+                guardedNext,
+                guardedNext is null ? string.Empty : "qq-logical-guard",
+                guardedNext is null ? "unknown" : "track");
         }, cancellationToken);
+    }
+
+    public async IAsyncEnumerable<PlayerSnapshot> WatchSnapshotsAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await using var subscription = _eventMonitor.Subscribe();
+        await _eventMonitor.EnsureStartedAsync().ConfigureAwait(false);
+
+        var snapshot = await ProbeAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var fingerprint = BuildSnapshotFingerprint(snapshot);
+        yield return snapshot;
+
+        while (await subscription.Reader.WaitToReadAsync(cancellationToken)
+                   .ConfigureAwait(false))
+        {
+            QQMusicPlayerEvent? latest = null;
+            while (subscription.Reader.TryRead(out var playerEvent))
+            {
+                latest = playerEvent;
+            }
+
+            // GSMTC commonly emits playback, timeline and media-property
+            // notifications as one burst. Coalesce that burst into one exact
+            // snapshot without turning the delay into a repeating poll.
+            await Task.Delay(15, cancellationToken).ConfigureAwait(false);
+            while (subscription.Reader.TryRead(out var additionalEvent))
+            {
+                latest = additionalEvent;
+            }
+
+            if (Volatile.Read(ref _snapshotSuppressionDepth) > 0)
+            {
+                continue;
+            }
+
+            snapshot = await ProbeAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (latest?.Kind == QQMusicEventKind.MediaPropertiesChanged
+                && snapshot.Connected
+                && _eventMonitor.ReadMediaTrack() is { } mediaTrack
+                && CurrentMetadataRepresentsSameSong(
+                    snapshot.Current,
+                    mediaTrack))
+            {
+                var current = ResolveKnownTrack(
+                        mediaTrack.Title,
+                        mediaTrack.Artist)
+                    ?? mediaTrack;
+                if (string.IsNullOrWhiteSpace(current.CoverUrl))
+                {
+                    ScheduleArtworkLookup(current);
+                }
+                ClearPendingNativeNextIfPlaying(current);
+                snapshot = snapshot with
+                {
+                    Current = current,
+                    ObservedAt = DateTimeOffset.Now
+                };
+            }
+
+            var nextFingerprint = BuildSnapshotFingerprint(snapshot);
+            if (nextFingerprint == fingerprint)
+            {
+                continue;
+            }
+            fingerprint = nextFingerprint;
+            yield return snapshot;
+        }
     }
 
     private void StartCompatibilityReportOnce()
@@ -186,6 +288,13 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                         ? $"未重复提交 QQ 原生下一首；{guardResult.Message}"
                         : guardResult.Message
                 };
+            }
+            if (command == PlayerCommand.InterruptSelected)
+            {
+                return await ExecuteInterruptSelectedAsync(
+                    before,
+                    track,
+                    cancellationToken).ConfigureAwait(false);
             }
             if (command == PlayerCommand.PlaySelected)
             {
@@ -288,8 +397,30 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposing, 1) != 0)
+        {
+            return;
+        }
+
+        Task[] softwareNextTasks;
+        lock (_softwareNextSync)
+        {
+            softwareNextTasks = [.. _softwareNextTasks];
+        }
         CancelSoftwareNext(string.Empty);
         _lifetimeCancellation.Cancel();
+        if (softwareNextTasks.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(softwareNextTasks).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Normal connector shutdown.
+            }
+        }
+        await _eventMonitor.DisposeAsync().ConfigureAwait(false);
         Task[] artworkTasks;
         lock (_trackSync)
         {
@@ -310,7 +441,150 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
 
         _lifetimeCancellation.Dispose();
         _catalogClient.Dispose();
+        _nativeNextInsertGate.Dispose();
         _operationGate.Dispose();
+    }
+
+    private async Task<PlayerOperationResult> ExecuteInterruptSelectedAsync(
+        PlayerSnapshot before,
+        PlayerTrack? track,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (track is null)
+        {
+            return new PlayerOperationResult(
+                OperationOutcome.Rejected,
+                "请先选择一条 QQ 搜索结果。",
+                before);
+        }
+        if (!AllowUnsafeNativeNext)
+        {
+            return new PlayerOperationResult(
+                OperationOutcome.Rejected,
+                "当前未启用经过画像校验的 QQ 原生队列能力；"
+                + "为避免重建播放器队列，已拒绝插队播放。",
+                before);
+        }
+        if (before.Current is null)
+        {
+            return new PlayerOperationResult(
+                OperationOutcome.Rejected,
+                "QQ 当前歌曲不可识别，无法安全执行上一首—插入—切换事务。",
+                before);
+        }
+
+        var payload = ParsePayload(track);
+        if (!payload.IsPlayable)
+        {
+            return new PlayerOperationResult(
+                OperationOutcome.Rejected,
+                "QQ 目录接口把该结果标记为不可播放。",
+                before);
+        }
+
+        var executable = FindExecutablePath();
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            return new PlayerOperationResult(
+                OperationOutcome.Rejected,
+                "找不到 QQMusic.exe，无法执行插队事务。",
+                before);
+        }
+
+        Interlocked.Increment(ref _snapshotSuppressionDepth);
+        using var audioMute = QQMusicAudioMuteScope.Capture();
+        var muted = audioMute.Mute();
+        try
+        {
+            // Once the transaction starts, finish its bounded native sequence
+            // even if the caller's request timeout is cancelled. Exposing the
+            // temporary previous-track snapshot would make the host mistake
+            // its own operation for a manual user skip.
+            var transactionToken = CancellationToken.None;
+            CancelSoftwareNext("QQ 插队事务正在重排当前歌曲。等待最终目标后再更新守卫。");
+            var pause = await Task.Run(
+                () => SendSingleInstanceCommand(
+                    executable,
+                    "/playcontrol",
+                    "'pause'",
+                    helperWaitMilliseconds: 100),
+                transactionToken).ConfigureAwait(false);
+            if (!pause.Sent)
+            {
+                return new PlayerOperationResult(
+                    OperationOutcome.Rejected,
+                    "QQ 插队事务未能暂停当前歌曲：" + pause.Message,
+                    before);
+            }
+
+            var previous = await Task.Run(
+                () => SendSingleInstanceCommand(
+                    executable,
+                    "/playcontrol",
+                    "'prev'",
+                    helperWaitMilliseconds: 100),
+                transactionToken).ConfigureAwait(false);
+            if (!previous.Sent)
+            {
+                _ = SendSingleInstanceCommand(
+                    executable,
+                    "/playcontrol",
+                    "'play'",
+                    helperWaitMilliseconds: 100);
+                return new PlayerOperationResult(
+                    OperationOutcome.Rejected,
+                    "QQ 插队事务未能切到当前歌曲的上一首："
+                    + previous.Message,
+                    before);
+            }
+
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+            var anchor = before;
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(40, transactionToken).ConfigureAwait(false);
+                anchor = await ProbeAsync(transactionToken).ConfigureAwait(false);
+                if (anchor.Current is not null
+                    && HasTrackChanged(before.Current, anchor.Current))
+                {
+                    break;
+                }
+            }
+            if (anchor.Current is null
+                || !HasTrackChanged(before.Current, anchor.Current))
+            {
+                _ = SendSingleInstanceCommand(
+                    executable,
+                    "/playcontrol",
+                    "'play'",
+                    helperWaitMilliseconds: 100);
+                return new PlayerOperationResult(
+                    OperationOutcome.Rejected,
+                    "已发送上一首，但 3 秒内没有确认新的插入锚点；"
+                    + "为避免在错误位置插入，事务已停止。",
+                    anchor);
+            }
+
+            var result = await ExecutePlaySelectedAsync(
+                anchor,
+                track,
+                transactionToken).ConfigureAwait(false);
+            return result with
+            {
+                Message = "QQ 插队事务已隐藏内部上一首过渡；"
+                    + (muted ? "过渡期间已静音；" : "未捕获到可静音音频会话；")
+                    + result.Message
+            };
+        }
+        finally
+        {
+            audioMute.Restore();
+            if (Interlocked.Decrement(ref _snapshotSuppressionDepth) == 0)
+            {
+                _eventMonitor.NotifySnapshotInvalidated();
+            }
+        }
     }
 
     private async Task<PlayerOperationResult> ExecutePlaySelectedAsync(
@@ -344,16 +618,49 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                 before);
         }
 
+        var executable = FindExecutablePath();
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            return new PlayerOperationResult(
+                OperationOutcome.Rejected,
+                "找不到 QQMusic.exe，无法执行暂停—插入—切换事务。",
+                before);
+        }
+
+        var pause = await Task.Run(
+            () => SendSingleInstanceCommand(
+                executable,
+                "/playcontrol",
+                "'pause'",
+                helperWaitMilliseconds: 100),
+            cancellationToken).ConfigureAwait(false);
+        if (!pause.Sent)
+        {
+            return new PlayerOperationResult(
+                OperationOutcome.Rejected,
+                "QQ 立即点歌未能先暂停，已取消插入以避免漏音："
+                + pause.Message,
+                before);
+        }
+
+        await Task.Delay(20, cancellationToken).ConfigureAwait(false);
+
         CancelSoftwareNext("正在立即播放新的目标歌曲。");
         var guard = ArmSoftwareNext(before, track, cancellationToken);
-        var native = await QQMusicNativeNextTransport.InsertAsync(
-                new QQMusicSongReference(payload.SongId, payload.SongType),
-                TimeSpan.FromSeconds(6))
-            .WaitAsync(cancellationToken)
-            .ConfigureAwait(false);
-        if (!IsNativeInsertAccepted(native, payload.SongId))
+        var native = await EnsureNativeNextInsertedAsync(
+            track,
+            payload,
+            cancellationToken).ConfigureAwait(false);
+        if (!native.Accepted)
         {
             CancelSoftwareNext("QQ 原生插入被画像校验拒绝。");
+            _ = await Task.Run(
+                () => SendSingleInstanceCommand(
+                    executable,
+                    "/playcontrol",
+                    "'play'",
+                    helperWaitMilliseconds: 100),
+                cancellationToken).ConfigureAwait(false);
             return new PlayerOperationResult(
                 OperationOutcome.Rejected,
                 "QQ 原生插入下一首被拒绝；为保护播放器原有队列，"
@@ -361,16 +668,6 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                 + $" 验证={native.Verification}；"
                 + (native.Error ?? "底层校验未通过。"),
                 await ProbeAsync(cancellationToken).ConfigureAwait(false));
-        }
-
-        var executable = FindExecutablePath();
-        if (string.IsNullOrWhiteSpace(executable))
-        {
-            CancelSoftwareNext("找不到 QQMusic.exe，无法切到已插入的下一首。");
-            return new PlayerOperationResult(
-                OperationOutcome.Rejected,
-                "目标已插入 QQ 下一首，但没有找到 QQMusic.exe 来发送 next。",
-                before);
         }
 
         var foregroundBefore = GetForegroundWindow();
@@ -383,9 +680,17 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
             cancellationToken).ConfigureAwait(false);
         if (!next.Sent)
         {
+            _ = await Task.Run(
+                () => SendSingleInstanceCommand(
+                    executable,
+                    "/playcontrol",
+                    "'play'",
+                    helperWaitMilliseconds: 100),
+                cancellationToken).ConfigureAwait(false);
             return new PlayerOperationResult(
                 OperationOutcome.Accepted,
-                "目标已安全插入 QQ 下一首，但 next 命令发送失败："
+                "目标已安全插入 QQ 下一首，但 next 命令发送失败；"
+                + "已恢复原歌曲播放，且不会重复插入："
                 + next.Message,
                 await ProbeAsync(cancellationToken).ConfigureAwait(false));
         }
@@ -399,19 +704,35 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
             after = await ProbeAsync(cancellationToken).ConfigureAwait(false);
             if (TrackMatches(after.Current, track))
             {
+                _ = await Task.Run(
+                    () => SendSingleInstanceCommand(
+                        executable,
+                        "/playcontrol",
+                        "'play'",
+                        helperWaitMilliseconds: 100),
+                    cancellationToken).ConfigureAwait(false);
                 return new PlayerOperationResult(
                     OperationOutcome.Verified,
-                    $"已原生插入下一首并切到目标：{track.DisplayName}；"
+                    $"已先暂停，{(native.InsertedNow ? "原生插入" : "复用已插入事务")}"
+                    + $"并切到目标：{track.DisplayName}；"
                     + $"前台未变={foregroundBefore == GetForegroundWindow()}。",
                     after);
             }
         }
 
+        _ = await Task.Run(
+            () => SendSingleInstanceCommand(
+                executable,
+                "/playcontrol",
+                "'play'",
+                helperWaitMilliseconds: 100),
+            cancellationToken).ConfigureAwait(false);
+
         return new PlayerOperationResult(
             guard.IsSuccess
                 ? OperationOutcome.Accepted
                 : OperationOutcome.Applied,
-            "已原生插入并发送 next，但 3 秒内未从标题确认目标；"
+            "已先暂停、确认插入事务并发送 next，但 3 秒内未从标题确认目标；"
             + "静音守卫会继续核对，且没有重建 QQ 原有队列。",
             after);
     }
@@ -445,21 +766,31 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                 before);
         }
 
-        var result = await QQMusicNativeNextTransport.InsertAsync(
-            new QQMusicSongReference(payload.SongId, payload.SongType),
-            TimeSpan.FromSeconds(6)).WaitAsync(cancellationToken)
-            .ConfigureAwait(false);
+        var result = await EnsureNativeNextInsertedAsync(
+            track,
+            payload,
+            cancellationToken).ConfigureAwait(false);
         var after = await ProbeAsync(cancellationToken).ConfigureAwait(false);
-        var accepted = IsNativeInsertAccepted(result, payload.SongId);
+        var accepted = result.Accepted;
         if (!accepted)
         {
             CancelSoftwareNext("QQ 原生插入被画像校验拒绝。");
         }
         return new PlayerOperationResult(
-            accepted ? OperationOutcome.Accepted : OperationOutcome.Rejected,
             accepted
-                ? $"QQ 已按精确版本画像提交原生下一首，songID={result.ResolvedSongId}；"
-                  + "当前歌曲未变化；静音防漏音守卫同时待命。"
+                ? result.Indeterminate
+                    ? OperationOutcome.Indeterminate
+                    : OperationOutcome.Accepted
+                : OperationOutcome.Rejected,
+            accepted
+                ? result.InsertedNow
+                    ? result.Indeterminate
+                        ? $"QQ 原生 AddSongs 可能已完成，songID={payload.SongId}；"
+                          + "为防止重复歌曲，本次按不确定成功记账且禁止自动重插。"
+                        : $"QQ 已按精确版本画像提交原生下一首，songID={payload.SongId}；"
+                          + "当前歌曲未变化；静音防漏音守卫同时待命。"
+                    : $"QQ 下一首事务已包含 songID={payload.SongId}；"
+                      + "本次没有重复插入，静音防漏音守卫继续待命。"
                 : $"QQ 原生下一首被拒绝：{result.Verification}；"
                   + (result.Error ?? "底层校验未通过。")
                   + " 未回退到会重建队列的播放命令。",
@@ -474,6 +805,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         && result.NativeStage == 5
         && result.GetCatManagerHresult >= 0
         && result.GetSongInfoHresult >= 0
+        && result.AddSongsHresult >= 0
         && result.ResolvedSongId == expectedSongId;
 
     private PlayerOperationResult ArmSoftwareNext(
@@ -482,6 +814,13 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (Volatile.Read(ref _disposing) != 0)
+        {
+            return new PlayerOperationResult(
+                OperationOutcome.Rejected,
+                "QQ 连接器正在关闭，未登记新的下一首守卫。",
+                before);
+        }
         if (track is null)
         {
             return new PlayerOperationResult(
@@ -517,17 +856,38 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         CancellationTokenSource? previousCancellation;
         lock (_softwareNextSync)
         {
+            if (Volatile.Read(ref _disposing) != 0)
+            {
+                pendingCancellation.Dispose();
+                return new PlayerOperationResult(
+                    OperationOutcome.Rejected,
+                    "QQ 连接器正在关闭，未登记新的下一首守卫。",
+                    before);
+            }
             previousCancellation = _softwareNextCancellation;
             _softwareNextCancellation = pendingCancellation;
+            _softwareNextTarget = track;
             _softwareNextStatus = $"下一首静音防漏音守卫待命：{track.DisplayName}";
-            _softwareNextTask = Task.Run(
-                () => MonitorSoftwareNextAsync(
+            var task = Task.Run(
+                () => MonitorSoftwareNextEventsAsync(
                     pendingCancellation,
-                    (nint)currentState.WindowHandle.Value,
                     currentState.WindowTitle,
                     currentKey,
                     track,
                     payload));
+            _softwareNextTask = task;
+            _softwareNextTasks.Add(task);
+            _ = task.ContinueWith(
+                completedTask =>
+                {
+                    lock (_softwareNextSync)
+                    {
+                        _softwareNextTasks.Remove(completedTask);
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         if (previousCancellation is not null)
@@ -538,14 +898,13 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         return new PlayerOperationResult(
             OperationOutcome.Accepted,
             $"已登记静音防漏音下一首：{track.DisplayName}。"
-            + "已开始直接高频监测 QQ 主窗口标题；发生切换时会先静音 QQ，"
+            + "已订阅 Windows 媒体会话与 WinEventHook；发生切换时会先静音 QQ，"
             + "若歌曲错误会在静音中暂停、原生插入目标，再切到下一首。",
             before);
     }
 
-    private async Task MonitorSoftwareNextAsync(
+    private async Task MonitorSoftwareNextEventsAsync(
         CancellationTokenSource owner,
-        nint initialWindowHandle,
         string initialWindowTitle,
         string initialPlaybackKey,
         PlayerTrack track,
@@ -553,132 +912,331 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
     {
         var cancellationToken = owner.Token;
         using var audioMute = QQMusicAudioMuteScope.Capture();
-        var timelineProbeTask =
-            QQMusicTimelineProbe.TryCreateAsync();
+        await using var subscription = _eventMonitor.Subscribe();
+        _ = _eventMonitor.EnsureStartedAsync();
+        CancellationTokenSource? preMuteTimerCancellation = null;
         try
         {
-            var expiresAt =
-                DateTimeOffset.UtcNow + TimeSpan.FromHours(12);
-            var windowHandle = initialWindowHandle;
             var baselineWindowTitle = initialWindowTitle;
             var transitionDetected = false;
-            var emptyTitleReads = 0;
-            QQMusicTimelineProbe? timelineProbe = null;
-            DateTimeOffset? preMutedAt = null;
-            var timelineCheckAt = DateTimeOffset.UtcNow;
+            var preMuted = false;
             var preMuteSuppressedUntil = DateTimeOffset.MinValue;
-            while (DateTimeOffset.UtcNow < expiresAt)
+            var correctingWrongTrack = false;
+            var correctionAttempts = 0;
+            Task? correctionTimeout = null;
+            Task? transitionObservationTimeout = null;
+            Task? preMuteRestoreTimeout = null;
+            Task? preMuteTimer = null;
+            var expiration = Task.Delay(
+                TimeSpan.FromHours(12),
+                cancellationToken);
+            var eventTask = subscription.Reader
+                .ReadAsync(cancellationToken)
+                .AsTask();
+
+            void CancelPreMuteTimer()
             {
-                await Task.Delay(2, cancellationToken)
+                preMuteTimerCancellation?.Cancel();
+                preMuteTimerCancellation?.Dispose();
+                preMuteTimerCancellation = null;
+                preMuteTimer = null;
+            }
+
+            void SchedulePreMuteTimer()
+            {
+                CancelPreMuteTimer();
+                if (preMuted || transitionDetected || correctingWrongTrack)
+                {
+                    return;
+                }
+
+                var timeline = _eventMonitor.ReadTimelineSnapshot();
+                if (timeline is null
+                    || !timeline.PlaybackStatus.Equals(
+                        "Playing",
+                        StringComparison.Ordinal)
+                    || timeline.EndTime <= timeline.StartTime
+                    || timeline.ReportedPosition < timeline.StartTime
+                    || timeline.ReportedPosition > timeline.EndTime)
+                {
+                    return;
+                }
+
+                var due = timeline.EstimatedRemaining
+                    - NaturalEndPreMuteLead;
+                if (due < TimeSpan.Zero)
+                {
+                    if (timeline.EstimatedRemaining
+                        < TimeSpan.FromSeconds(-1))
+                    {
+                        return;
+                    }
+                    due = TimeSpan.Zero;
+                }
+
+                var suppressionDelay =
+                    preMuteSuppressedUntil - DateTimeOffset.UtcNow;
+                if (suppressionDelay > due)
+                {
+                    due = suppressionDelay;
+                }
+                if (due > TimeSpan.FromHours(12))
+                {
+                    return;
+                }
+
+                preMuteTimerCancellation =
+                    CancellationTokenSource.CreateLinkedTokenSource(
+                        cancellationToken);
+                preMuteTimer = Task.Delay(
+                    due < TimeSpan.Zero ? TimeSpan.Zero : due,
+                    preMuteTimerCancellation.Token);
+            }
+
+            SchedulePreMuteTimer();
+
+            while (true)
+            {
+                var waiters = new List<Task>
+                {
+                    eventTask,
+                    expiration
+                };
+                if (preMuteTimer is not null)
+                {
+                    waiters.Add(preMuteTimer);
+                }
+                if (preMuteRestoreTimeout is not null)
+                {
+                    waiters.Add(preMuteRestoreTimeout);
+                }
+                if (correctionTimeout is not null)
+                {
+                    waiters.Add(correctionTimeout);
+                }
+                if (transitionObservationTimeout is not null)
+                {
+                    waiters.Add(transitionObservationTimeout);
+                }
+
+                var completed = await Task.WhenAny(waiters)
                     .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
 
-                var observedWindowTitle = ReadWindowTitle(windowHandle);
-                if (string.IsNullOrWhiteSpace(observedWindowTitle))
+                if (ReferenceEquals(completed, expiration))
                 {
-                    emptyTitleReads++;
-                    if (emptyTitleReads >= 25)
-                    {
-                        var refreshed =
-                            QQMusicNativeController.ReadPlaybackState();
-                        if (refreshed.WindowHandle is not null
-                            && !string.IsNullOrWhiteSpace(
-                                refreshed.WindowTitle))
-                        {
-                            windowHandle =
-                                (nint)refreshed.WindowHandle.Value;
-                            observedWindowTitle =
-                                refreshed.WindowTitle;
-                        }
-
-                        emptyTitleReads = 0;
-                    }
-                }
-                else
-                {
-                    emptyTitleReads = 0;
-                }
-
-                if (!transitionDetected)
-                {
-                    if (string.Equals(
-                            observedWindowTitle,
-                            baselineWindowTitle,
-                            StringComparison.Ordinal))
-                    {
-                        var now = DateTimeOffset.UtcNow;
-                        if (preMutedAt is not null)
-                        {
-                            if (now - preMutedAt.Value
-                                >= TimeSpan.FromSeconds(2))
-                            {
-                                audioMute.Restore();
-                                preMutedAt = null;
-                                preMuteSuppressedUntil =
-                                    now + TimeSpan.FromSeconds(3);
-                                SetSoftwareNextStatus(
-                                    owner,
-                                    "QQ 时间线预静音后 2 秒内未发生切歌，"
-                                    + "已恢复原静音状态并继续守卫。");
-                            }
-
-                            continue;
-                        }
-
-                        if (now >= timelineCheckAt
-                            && now >= preMuteSuppressedUntil)
-                        {
-                            timelineCheckAt =
-                                now + TimeSpan.FromMilliseconds(20);
-                            if (timelineProbe is null
-                                && timelineProbeTask
-                                    .IsCompletedSuccessfully)
-                            {
-                                timelineProbe =
-                                    timelineProbeTask.Result;
-                            }
-
-                            if (timelineProbe?.IsPlayingNearNaturalEnd(
-                                    NaturalEndPreMuteLead,
-                                    out var remaining) == true
-                                && audioMute.Mute())
-                            {
-                                preMutedAt = now;
-                                SetSoftwareNextStatus(
-                                    owner,
-                                    "QQ 即将自然切歌，已提前静音防止错误歌曲首帧漏音"
-                                    + $"（预计剩余 {Math.Max(0, remaining.TotalMilliseconds):F0} ms）。");
-                            }
-                        }
-
-                        continue;
-                    }
-
-                    transitionDetected = true;
-                    var muted = audioMute.Mute();
                     SetSoftwareNextStatus(
                         owner,
-                        muted
-                            ? $"检测到 QQ 标题切换，已立即静音 "
-                              + $"{audioMute.CapturedSessionCount} 个音频会话。"
-                            : "检测到 QQ 标题切换，但没有捕获到可静音的 QQ 音频会话；"
-                              + "将继续用 pause 接管。");
+                        "软件下一首已过期（12 小时未发生切歌）。");
+                    return;
                 }
 
-                if (string.Equals(
-                        observedWindowTitle,
-                        baselineWindowTitle,
-                        StringComparison.Ordinal))
+                if (preMuteTimer is not null
+                    && ReferenceEquals(completed, preMuteTimer))
                 {
-                    // A transient read failure is not a real track transition.
-                    // Restore promptly so the current song is not left muted.
-                    audioMute.Restore();
-                    preMutedAt = null;
-                    transitionDetected = false;
+                    preMuteTimerCancellation?.Dispose();
+                    preMuteTimerCancellation = null;
+                    preMuteTimer = null;
+                    var timeline = _eventMonitor.ReadTimelineSnapshot();
+                    var remaining = timeline?.EstimatedRemaining
+                        ?? TimeSpan.MaxValue;
+                    if (timeline is not null
+                        && timeline.PlaybackStatus.Equals(
+                            "Playing",
+                            StringComparison.Ordinal)
+                        && remaining <= NaturalEndPreMuteLead
+                        && remaining >= TimeSpan.FromSeconds(-1)
+                        && audioMute.Mute())
+                    {
+                        preMuted = true;
+                        preMuteRestoreTimeout = Task.Delay(
+                            TimeSpan.FromSeconds(2),
+                            cancellationToken);
+                        SetSoftwareNextStatus(
+                            owner,
+                            "QQ 即将自然切歌，已按媒体时间线的一次性定时器提前静音"
+                            + $"（预计剩余 {Math.Max(0, remaining.TotalMilliseconds):F0} ms）。");
+                    }
+                    else
+                    {
+                        SchedulePreMuteTimer();
+                    }
                     continue;
                 }
 
-                var observedTrack =
-                    ParseQqWindowTrack(observedWindowTitle);
+                if (preMuteRestoreTimeout is not null
+                    && ReferenceEquals(completed, preMuteRestoreTimeout))
+                {
+                    preMuteRestoreTimeout = null;
+                    if (preMuted && !transitionDetected)
+                    {
+                        audioMute.Restore();
+                        preMuted = false;
+                        preMuteSuppressedUntil =
+                            DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+                        SetSoftwareNextStatus(
+                            owner,
+                            "QQ 时间线预静音后 2 秒内未发生切歌，"
+                            + "已恢复原静音状态并继续等待事件。");
+                    }
+                    SchedulePreMuteTimer();
+                    continue;
+                }
+
+                if (correctionTimeout is not null
+                    && ReferenceEquals(completed, correctionTimeout))
+                {
+                    correctionTimeout = null;
+                    if (correctionAttempts >= 3)
+                    {
+                        audioMute.Restore();
+                        SetSoftwareNextStatus(
+                            owner,
+                            $"兜底已重试 {correctionAttempts} 次仍未确认："
+                            + $"{track.DisplayName}；已停止自动切歌并保留日志。"
+                            + "请检查 QQ 队列或手动重试。");
+                        return;
+                    }
+
+                    var retryExecutable = FindExecutablePath();
+                    if (string.IsNullOrWhiteSpace(retryExecutable))
+                    {
+                        audioMute.Restore();
+                        SetSoftwareNextStatus(
+                            owner,
+                            "兜底重试失败：未找到 QQMusic.exe。");
+                        return;
+                    }
+
+                    correctionAttempts++;
+                    _ = await Task.Run(
+                        () => SendSingleInstanceCommand(
+                            retryExecutable,
+                            "/playcontrol",
+                            "'pause'",
+                            helperWaitMilliseconds: 100),
+                        cancellationToken).ConfigureAwait(false);
+                    var retryNative = await EnsureNativeNextInsertedAsync(
+                        track,
+                        payload,
+                        cancellationToken).ConfigureAwait(false);
+                    if (!retryNative.Accepted)
+                    {
+                        audioMute.Restore();
+                        SetSoftwareNextStatus(
+                            owner,
+                            "兜底重试时原生目标被拒绝："
+                            + retryNative.Verification);
+                        return;
+                    }
+
+                    var retryNext = await Task.Run(
+                        () => SendSingleInstanceCommand(
+                            retryExecutable,
+                            "/playcontrol",
+                            "'next'",
+                            helperWaitMilliseconds: 100),
+                        cancellationToken).ConfigureAwait(false);
+                    if (!retryNext.Sent)
+                    {
+                        audioMute.Restore();
+                        SetSoftwareNextStatus(
+                            owner,
+                            "兜底重试的 next 发送失败：" + retryNext.Message);
+                        return;
+                    }
+
+                    correctionTimeout = Task.Delay(
+                        TimeSpan.FromSeconds(3),
+                        cancellationToken);
+                    SetSoftwareNextStatus(
+                        owner,
+                        $"兜底第 {correctionAttempts} 次重试已发送，"
+                        + $"继续等待确认：{track.DisplayName}");
+                    continue;
+                }
+
+                if (transitionObservationTimeout is not null
+                    && ReferenceEquals(
+                        completed,
+                        transitionObservationTimeout))
+                {
+                    transitionObservationTimeout = null;
+                    audioMute.Restore();
+                    preMuted = false;
+                    transitionDetected = false;
+                    SetSoftwareNextStatus(
+                        owner,
+                        "收到 QQ 切换信号但 2 秒内没有可识别歌曲事件；"
+                        + "已恢复原静音状态并继续等待事件。");
+                    SchedulePreMuteTimer();
+                    continue;
+                }
+
+                var playerEvent = await eventTask.ConfigureAwait(false);
+                eventTask = subscription.Reader
+                    .ReadAsync(cancellationToken)
+                    .AsTask();
+                while (subscription.Reader.TryRead(out var additionalEvent))
+                {
+                    playerEvent = additionalEvent;
+                }
+
+                if (playerEvent.Kind is QQMusicEventKind.Initialized
+                    or QQMusicEventKind.SessionsChanged
+                    or QQMusicEventKind.MediaPropertiesChanged
+                    or QQMusicEventKind.PlaybackInfoChanged
+                    or QQMusicEventKind.TimelinePropertiesChanged)
+                {
+                    SchedulePreMuteTimer();
+                }
+
+                PlayerTrack? observedTrack = null;
+                var observedWindowTitle = string.Empty;
+                if (playerEvent.Kind == QQMusicEventKind.WindowTitleChanged)
+                {
+                    observedWindowTitle = playerEvent.WindowTitle;
+                    observedTrack = ParseQqWindowTrack(observedWindowTitle);
+                }
+                else if (playerEvent.Kind
+                         == QQMusicEventKind.MediaPropertiesChanged)
+                {
+                    var mediaTrack = _eventMonitor.ReadMediaTrack();
+                    var windowTrack = ParseQqWindowTrack(
+                        QQMusicNativeController
+                            .ReadPlaybackState()
+                            .WindowTitle);
+                    if (CurrentMetadataRepresentsSameSong(
+                            windowTrack,
+                            mediaTrack))
+                    {
+                        observedTrack = mediaTrack;
+                    }
+                }
+
+                if (playerEvent.Kind == QQMusicEventKind.WindowTitleChanged
+                    && !string.Equals(
+                        observedWindowTitle,
+                        baselineWindowTitle,
+                        StringComparison.Ordinal)
+                    && !transitionDetected)
+                {
+                    CancelPreMuteTimer();
+                    transitionDetected = true;
+                    transitionObservationTimeout = Task.Delay(
+                        TimeSpan.FromSeconds(2),
+                        cancellationToken);
+                    var muted = preMuted || audioMute.Mute();
+                    preMuted = muted;
+                    SetSoftwareNextStatus(
+                        owner,
+                        muted
+                            ? $"WinEventHook 检测到 QQ 标题切换，已静音 "
+                              + $"{audioMute.CapturedSessionCount} 个音频会话。"
+                            : "WinEventHook 检测到 QQ 标题切换，但没有捕获到可静音的 QQ 音频会话；"
+                              + "将继续用 pause 接管。");
+                }
+
                 if (observedTrack is null)
                 {
                     continue;
@@ -687,14 +1245,44 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                 var observedKey = BuildPlaybackKey(observedTrack);
                 if (observedKey == initialPlaybackKey)
                 {
-                    baselineWindowTitle = observedWindowTitle;
-                    audioMute.Restore();
-                    transitionDetected = false;
+                    if (playerEvent.Kind
+                        == QQMusicEventKind.WindowTitleChanged)
+                    {
+                        baselineWindowTitle = observedWindowTitle;
+                    }
+                    if (transitionDetected && !correctingWrongTrack)
+                    {
+                        audioMute.Restore();
+                        preMuted = false;
+                        preMuteRestoreTimeout = null;
+                        transitionObservationTimeout = null;
+                        transitionDetected = false;
+                        SchedulePreMuteTimer();
+                    }
                     continue;
+                }
+
+                if (!transitionDetected)
+                {
+                    CancelPreMuteTimer();
+                    transitionDetected = true;
+                    transitionObservationTimeout = Task.Delay(
+                        TimeSpan.FromSeconds(2),
+                        cancellationToken);
+                    var muted = preMuted || audioMute.Mute();
+                    preMuted = muted;
+                    SetSoftwareNextStatus(
+                        owner,
+                        muted
+                            ? $"Windows 媒体会话检测到 QQ 切歌，已静音 "
+                              + $"{audioMute.CapturedSessionCount} 个音频会话。"
+                            : "Windows 媒体会话检测到 QQ 切歌，但没有捕获到可静音的 QQ 音频会话；"
+                              + "将继续用 pause 接管。");
                 }
 
                 if (TrackMatches(observedTrack, track))
                 {
+                    ClearPendingNativeNextIfPlaying(track);
                     audioMute.Restore();
                     SetSoftwareNextStatus(
                         owner,
@@ -702,102 +1290,80 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                     return;
                 }
 
-                cancellationToken.ThrowIfCancellationRequested();
-                    var executable = FindExecutablePath();
-                    if (string.IsNullOrWhiteSpace(executable))
-                    {
-                        SetSoftwareNextStatus(
-                            owner,
-                            "软件下一首失败：未找到 QQMusic.exe");
-                        return;
-                    }
+                if (correctingWrongTrack)
+                {
+                    continue;
+                }
 
+                var executable = FindExecutablePath();
+                if (string.IsNullOrWhiteSpace(executable))
+                {
                     SetSoftwareNextStatus(
                         owner,
-                        $"检测到错误下一首：{observedTrack.DisplayName}；"
-                        + "QQ 音频已静音，正在暂停并接管");
-                    var pause = await Task.Run(
-                        () => SendSingleInstanceCommand(
-                            executable,
-                            "/playcontrol",
-                            "'pause'",
-                            helperWaitMilliseconds: 100),
-                        cancellationToken).ConfigureAwait(false);
-                    await Task.Delay(20, cancellationToken)
-                        .ConfigureAwait(false);
-                    var native = await QQMusicNativeNextTransport.InsertAsync(
-                            new QQMusicSongReference(
-                                payload.SongId,
-                                payload.SongType),
-                            TimeSpan.FromSeconds(6))
-                        .WaitAsync(cancellationToken)
-                        .ConfigureAwait(false);
-                    if (!IsNativeInsertAccepted(native, payload.SongId))
-                    {
-                        audioMute.Restore();
-                        SetSoftwareNextStatus(
-                            owner,
-                            "错误下一首已暂停，但原生插入目标被画像校验拒绝；"
-                            + "为保护 QQ 原队列，没有使用 /playbysongid。"
-                            + $" 验证={native.Verification}；已恢复原静音状态。");
-                        return;
-                    }
+                        "软件下一首失败：未找到 QQMusic.exe");
+                    return;
+                }
 
-                    var next = await Task.Run(
-                        () => SendSingleInstanceCommand(
-                            executable,
-                            "/playcontrol",
-                            "'next'",
-                            helperWaitMilliseconds: 100),
-                        cancellationToken).ConfigureAwait(false);
-                    if (!next.Sent)
-                    {
-                        audioMute.Restore();
-                        SetSoftwareNextStatus(
-                            owner,
-                            "目标已插入 QQ 下一首，但 next 发送失败："
-                            + next.Message
-                            + "；已恢复原静音状态。");
-                        return;
-                    }
-
-                    var targetDeadline =
-                        DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
-                    while (DateTimeOffset.UtcNow < targetDeadline)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        await Task.Delay(5, cancellationToken)
-                            .ConfigureAwait(false);
-                        var targetWindowTitle =
-                            ReadWindowTitle(windowHandle);
-                        var targetTrack =
-                            ParseQqWindowTrack(targetWindowTitle);
-                        if (targetTrack is not null
-                            && TrackMatches(targetTrack, track))
-                        {
-                            audioMute.Restore();
-                            SetSoftwareNextStatus(
-                                owner,
-                                pause.Sent
-                                    ? "已在静音中暂停错误歌曲，原生插入并切到目标后恢复声音："
-                                      + track.DisplayName
-                                    : "暂停未确认，但已原生插入并切到目标后恢复声音："
-                                      + track.DisplayName);
-                            return;
-                        }
-                    }
-
+                SetSoftwareNextStatus(
+                    owner,
+                    $"检测到错误下一首：{observedTrack.DisplayName}；"
+                    + "QQ 音频已静音，正在暂停并接管。");
+                var pause = await Task.Run(
+                    () => SendSingleInstanceCommand(
+                        executable,
+                        "/playcontrol",
+                        "'pause'",
+                        helperWaitMilliseconds: 100),
+                    cancellationToken).ConfigureAwait(false);
+                await Task.Delay(20, cancellationToken)
+                    .ConfigureAwait(false);
+                var native = await EnsureNativeNextInsertedAsync(
+                    track,
+                    payload,
+                    cancellationToken).ConfigureAwait(false);
+                if (!native.Accepted)
+                {
                     audioMute.Restore();
                     SetSoftwareNextStatus(
                         owner,
-                        $"已发送目标但 3 秒内未能确认：{track.DisplayName}；"
-                        + "为避免 QQ 一直静音，已恢复原静音状态。");
+                        "错误下一首已暂停，但原生插入目标被画像校验拒绝；"
+                        + "为保护 QQ 原队列，没有使用 /playbysongid。"
+                        + $" 验证={native.Verification}；已恢复原静音状态。");
                     return;
-            }
+                }
 
-            SetSoftwareNextStatus(
-                owner,
-                "软件下一首已过期（12 小时未发生切歌）");
+                correctingWrongTrack = true;
+                correctionAttempts = 1;
+                transitionObservationTimeout = null;
+                correctionTimeout = Task.Delay(
+                    TimeSpan.FromSeconds(3),
+                    cancellationToken);
+                var next = await Task.Run(
+                    () => SendSingleInstanceCommand(
+                        executable,
+                        "/playcontrol",
+                        "'next'",
+                        helperWaitMilliseconds: 100),
+                    cancellationToken).ConfigureAwait(false);
+                if (!next.Sent)
+                {
+                    audioMute.Restore();
+                    SetSoftwareNextStatus(
+                        owner,
+                        "目标已插入 QQ 下一首，但 next 发送失败："
+                        + next.Message
+                        + "；已恢复原静音状态。");
+                    return;
+                }
+
+                SetSoftwareNextStatus(
+                    owner,
+                    pause.Sent
+                        ? "已在静音中暂停错误歌曲并发送目标，正在等待切歌事件确认："
+                          + track.DisplayName
+                        : "暂停未确认，但已发送目标，正在等待切歌事件确认："
+                          + track.DisplayName);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -807,65 +1373,44 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         {
             SetSoftwareNextStatus(
                 owner,
-                $"软件下一首异常：{exception.Message}");
+                $"软件下一首事件守卫异常：{exception.Message}");
         }
         finally
         {
+            owner.Cancel();
+            preMuteTimerCancellation?.Cancel();
+            preMuteTimerCancellation?.Dispose();
             lock (_softwareNextSync)
             {
                 if (ReferenceEquals(_softwareNextCancellation, owner))
                 {
                     _softwareNextCancellation = null;
                     _softwareNextTask = null;
+                    _softwareNextTarget = null;
                 }
             }
-
             owner.Dispose();
         }
     }
 
+
     private static PlayerTrack? ParseQqWindowTrack(
         string? windowTitle)
     {
-        if (string.IsNullOrWhiteSpace(windowTitle)
-            || windowTitle.Equals(
-                "QQ\u97F3\u4E50",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
+        var parsed = QQMusicWindowTitleParser.Parse(windowTitle);
 
-        var separator = windowTitle.IndexOf(
-            " - ",
-            StringComparison.Ordinal);
-        if (separator <= 0)
-        {
-            return null;
-        }
-
-        return new PlayerTrack(
-            string.Empty,
-            windowTitle[..separator].Trim(),
-            windowTitle[(separator + 3)..].Trim(),
-            string.Empty);
+        return parsed is null
+            ? null
+            : new PlayerTrack(
+                string.Empty,
+                parsed.Title,
+                parsed.Artist,
+                string.Empty);
     }
 
     private static string BuildPlaybackKey(PlayerTrack track)
     {
         return $"{Normalize(track.Title)}|{Normalize(track.Artist)}";
-    }
-
-    private static string ReadWindowTitle(nint windowHandle)
-    {
-        var length = GetWindowTextLength(windowHandle);
-        if (length <= 0)
-        {
-            return string.Empty;
-        }
-
-        var text = new StringBuilder(length + 1);
-        _ = GetWindowText(windowHandle, text, text.Capacity);
-        return text.ToString().Trim();
     }
 
     private void SetSoftwareNextStatus(
@@ -879,6 +1424,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                 _softwareNextStatus = status;
             }
         }
+        _eventMonitor.NotifySnapshotInvalidated();
     }
 
     private void CancelSoftwareNext(string status)
@@ -889,6 +1435,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
             cancellation = _softwareNextCancellation;
             _softwareNextCancellation = null;
             _softwareNextTask = null;
+            _softwareNextTarget = null;
             _softwareNextStatus = status;
         }
 
@@ -896,6 +1443,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         {
             cancellation.Cancel();
         }
+        _eventMonitor.NotifySnapshotInvalidated();
     }
 
     private static string BuildPlaybackKey(QQMusicPlaybackState state)
@@ -1047,6 +1595,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                 _resolvedCurrentTracks[lookupKey] = track;
                 TrimTrackCachesLocked();
             }
+            _eventMonitor.NotifySnapshotInvalidated();
         }
         catch (OperationCanceledException)
         {
@@ -1071,15 +1620,7 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
             song.Artist,
             song.Album,
             nativeData,
-            BuildAlbumCoverUrl(song.AlbumMid));
-    }
-
-    private static string BuildAlbumCoverUrl(string? albumMid)
-    {
-        return string.IsNullOrWhiteSpace(albumMid)
-            ? string.Empty
-            : "https://y.gtimg.cn/music/photo_new/"
-              + $"T002R300x300M000{albumMid.Trim()}.jpg";
+            QQMusicAlbumArtwork.BuildCoverUrl(song.AlbumMid));
     }
 
     private static string BuildTrackLookupKey(
@@ -1093,6 +1634,161 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
     {
         return JsonSerializer.Deserialize<QqTrackPayload>(track.NativeData)
             ?? throw new InvalidDataException("QQ 搜索结果缺少原生 songID 数据。");
+    }
+
+    private async Task<NativeNextEnsureResult> EnsureNativeNextInsertedAsync(
+        PlayerTrack track,
+        QqTrackPayload payload,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await _nativeNextInsertGate.WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            long insertedAtSequence;
+            int? nativeSessionProcessId;
+            lock (_nativeNextSync)
+            {
+                PrunePendingNativeNextLocked(DateTimeOffset.UtcNow);
+                if (_pendingNativeNext.Any(pending =>
+                        pending.ProcessId == _nativeSessionProcessId
+                        &&
+                        pending.Payload.SongId == payload.SongId
+                        && pending.Payload.SongType == payload.SongType))
+                {
+                    return new NativeNextEnsureResult(
+                        true,
+                        false,
+                        false,
+                        "PendingNativeNextAlreadyInserted",
+                        null);
+                }
+                insertedAtSequence = _observedTrackSequence;
+                nativeSessionProcessId = _nativeSessionProcessId;
+            }
+
+            // Native AddSongs is not cancellable. Once this adapter-level gate
+            // is acquired, finish the mutation and ledger update before
+            // releasing it; otherwise a timed-out caller can start a duplicate
+            // insertion while the first native task is still running.
+            var result = await QQMusicNativeNextTransport.InsertAsync(
+                    new QQMusicSongReference(
+                        payload.SongId,
+                        payload.SongType),
+                    TimeSpan.FromSeconds(6))
+                .ConfigureAwait(false);
+            var verified = IsNativeInsertAccepted(result, payload.SongId);
+            var sideEffectPossible = !verified
+                && result.NativeStage >= 4
+                && result.AddSongsHresult >= 0
+                && result.ResolvedSongId == payload.SongId;
+            var sessionMatches = nativeSessionProcessId is not null
+                && result.TargetProcessId == nativeSessionProcessId.Value;
+            var accepted = (verified || sideEffectPossible) && sessionMatches;
+            if (accepted)
+            {
+                lock (_nativeNextSync)
+                {
+                    PrunePendingNativeNextLocked(DateTimeOffset.UtcNow);
+                    _pendingNativeNext.RemoveAll(pending =>
+                        pending.Payload.SongId == payload.SongId
+                        && pending.Payload.SongType == payload.SongType);
+                    _pendingNativeNext.Insert(
+                        0,
+                        new PendingQqNativeNext(
+                            track,
+                            payload,
+                            DateTimeOffset.UtcNow,
+                            insertedAtSequence,
+                            result.TargetProcessId,
+                            sideEffectPossible));
+                }
+                _eventMonitor.NotifySnapshotInvalidated();
+            }
+
+            return new NativeNextEnsureResult(
+                accepted,
+                true,
+                sideEffectPossible,
+                !sessionMatches
+                    ? "QQMusicProcessChangedDuringNativeInsert"
+                    : sideEffectPossible
+                    ? "NativeAddSongsMayHaveCompleted;DuplicateRetrySuppressed"
+                    : result.Verification,
+                result.Error);
+        }
+        finally
+        {
+            _nativeNextInsertGate.Release();
+        }
+    }
+
+    private void ClearPendingNativeNextIfPlaying(PlayerTrack? current)
+    {
+        if (current is null)
+        {
+            return;
+        }
+
+        var changed = false;
+        lock (_nativeNextSync)
+        {
+            var playbackKey = BuildPlaybackKey(current);
+            if (!string.Equals(
+                    playbackKey,
+                    _lastObservedPlaybackKey,
+                    StringComparison.Ordinal))
+            {
+                _lastObservedPlaybackKey = playbackKey;
+                _observedTrackSequence++;
+            }
+
+            changed |= PrunePendingNativeNextLocked(DateTimeOffset.UtcNow);
+            var matchingIndex = _pendingNativeNext.FindIndex(pending =>
+                _observedTrackSequence > pending.InsertedAtSequence
+                && TrackMatches(current, pending.Target));
+            if (matchingIndex >= 0)
+            {
+                _pendingNativeNext.RemoveRange(0, matchingIndex + 1);
+                changed = true;
+            }
+        }
+        if (changed)
+        {
+            _eventMonitor.NotifySnapshotInvalidated();
+        }
+    }
+
+    private bool PrunePendingNativeNextLocked(DateTimeOffset now)
+    {
+        var removed = _pendingNativeNext.RemoveAll(pending =>
+            now - pending.InsertedAt > TimeSpan.FromHours(12));
+        return removed > 0;
+    }
+
+    private PlayerTrack? GetSoftwareNextTarget()
+    {
+        lock (_softwareNextSync)
+        {
+            return _softwareNextTarget;
+        }
+    }
+
+    private void ObserveNativeSession(int? processId)
+    {
+        lock (_nativeNextSync)
+        {
+            if (_nativeSessionProcessId == processId)
+            {
+                return;
+            }
+
+            _nativeSessionProcessId = processId;
+            _pendingNativeNext.Clear();
+            _lastObservedPlaybackKey = string.Empty;
+            _observedTrackSequence = 0;
+        }
     }
 
     private static string? FindExecutablePath()
@@ -1222,6 +1918,19 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
                         == Normalize(expected.Artist))));
     }
 
+    private static bool CurrentMetadataRepresentsSameSong(
+        PlayerTrack? windowTrack,
+        PlayerTrack? mediaTrack)
+    {
+        return windowTrack is not null
+            && mediaTrack is not null
+            && QQMusicWindowTitleParser.MetadataRepresentsSameSong(
+                windowTrack.Title,
+                windowTrack.Artist,
+                mediaTrack.Title,
+                mediaTrack.Artist);
+    }
+
     private static bool HasTrackChanged(
         PlayerTrack? before,
         PlayerTrack? after)
@@ -1245,6 +1954,30 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         return Normalize(before.DisplayName) != Normalize(after.DisplayName);
     }
 
+    private static string BuildSnapshotFingerprint(PlayerSnapshot snapshot)
+    {
+        var current = snapshot.Current;
+        var next = snapshot.Next;
+        return string.Join(
+            '\u001F',
+            snapshot.Connected.ToString(),
+            snapshot.ProcessId?.ToString(),
+            snapshot.Version,
+            snapshot.Status,
+            current?.Id,
+            current?.Title,
+            current?.Artist,
+            current?.Album,
+            current?.CoverUrl,
+            next?.Id,
+            next?.Title,
+            next?.Artist,
+            next?.Album,
+            next?.CoverUrl,
+            snapshot.NextSource,
+            snapshot.NextObservation);
+    }
+
     private static string Normalize(string value)
     {
         return value.Trim().ToUpperInvariant();
@@ -1255,6 +1988,21 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         int SongType,
         string SongMid,
         bool IsPlayable);
+
+    private sealed record PendingQqNativeNext(
+        PlayerTrack Target,
+        QqTrackPayload Payload,
+        DateTimeOffset InsertedAt,
+        long InsertedAtSequence,
+        int ProcessId,
+        bool VerificationIndeterminate);
+
+    private sealed record NativeNextEnsureResult(
+        bool Accepted,
+        bool InsertedNow,
+        bool Indeterminate,
+        string Verification,
+        string? Error);
 
     private sealed record SingleInstanceSendResult(
         bool Sent,
@@ -1268,15 +2016,4 @@ internal sealed class QQMusicPlayerAdapter : IPlayerAdapter
         nint window,
         out uint processId);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetWindowTextLength(nint window);
-
-    [DllImport(
-        "user32.dll",
-        CharSet = CharSet.Unicode,
-        SetLastError = true)]
-    private static extern int GetWindowText(
-        nint window,
-        StringBuilder text,
-        int maximum);
 }
