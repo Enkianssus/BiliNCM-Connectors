@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-03T14:13:05.671Z",
+  "generatedAt": "2026-08-03T14:27:31.519Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -15,18 +15,18 @@
       "testedPlayerVersion": "3.1.37.205354",
       "runtime": "win-x64",
       "asset": "bilincm-connector-netease-3.1.37.205354.8-win-x64.zip",
-      "size": 37396006,
-      "sha256": "10d85f10328047b22a7e4dfba1cf311d83e502ecf52e030af636db0a4f17db10",
-      "signature": "BoFzLvAle5+JrqnD1PoZJhTJ03TWqoHNCP04rECYeBUR6AazEs7YHVRAtW92Cla/U257g0q1WWofm+x4qBBgAg==",
-      "publishedAt": "2026-08-03T14:13:05.671Z",
+      "size": 37391320,
+      "sha256": "9c6e767f13405e4d7ea704bfbf46063d1d8ac53fb1b7b2565923d573ce496eef",
+      "signature": "FB37milburIBllTskOaUIAtBOu59uU3v2Y8hv+ar240b7TLZMAN7AIKE7P3q+ooDA1svrI9dm6w2GUszcPjfBA==",
+      "publishedAt": "2026-08-03T14:27:31.519Z",
       "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.8/bilincm-connector-netease-3.1.37.205354.8-win-x64.zip",
       "frameworkDependent": {
         "runtime": "win-x64",
         "runtimeChannel": "8.0",
         "asset": "bilincm-connector-netease-3.1.37.205354.8-win-x64-framework-dependent.zip",
-        "size": 6890066,
-        "sha256": "450dbefc48050c10fe12fa1974697ee153412ead575608fef6cb3a22dffe041e",
-        "signature": "kjsBHPh/yFKlPgkBS8CXnDlMwuHUINYUFvRiuyAhlNiTwB3teylu71kyRlaH5GsyG+IomCaB1vIjUPZHqwQRDw==",
+        "size": 6890057,
+        "sha256": "28053de164c4b043d8e675b93f3640a28658f5b4c1262bf22cca4e3f7248d7af",
+        "signature": "2Uu55ociD1dmwD3ttEVY/18yuwhUQfbynjoN8QVNJl8nsJD95jGCWiBeQTYWDkPsc68NjMV33Vs40ChakGzOBw==",
         "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.8/bilincm-connector-netease-3.1.37.205354.8-win-x64-framework-dependent.zip"
       }
     },
