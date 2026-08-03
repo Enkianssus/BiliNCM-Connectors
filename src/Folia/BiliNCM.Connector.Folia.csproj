@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>BiliNCM.Connector.Folia</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
-    <Version>1.1.1</Version>
+    <Version>1.1.2</Version>
     <InformationalVersion>$(Version)</InformationalVersion>
   </PropertyGroup>
 

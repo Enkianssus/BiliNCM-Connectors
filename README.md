@@ -19,11 +19,11 @@ new BiliNCM core release.
 All connectors use newline-delimited JSON on standard input/output. Protocol
 version 1 supports `ping`, `probe`, `search`, `execute`, and `shutdown`.
 Optional features are negotiated independently, so adding one does not break
-older cores or connectors. NetEase `3.1.37.205354.5` advertises
+older cores or connectors. NetEase `3.1.37.205354.6` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
-QQ Music connector 22.41.4 uses exact, signed compatibility profiles for QQ Music
+QQ Music connector 22.41.5 uses exact, signed compatibility profiles for QQ Music
 22.22 and 22.41. On a matching DLL hash it calls QQ's internal
 `AddSongs(mode=0)` path to insert exactly one song after the current item, then
 uses QQ's normal Next command. Both immediate play and guarded fallback preserve
@@ -46,7 +46,7 @@ DLL SHA-256 values and analyzer results. It never uploads QQ Music binaries,
 local paths, accounts, cookies, playlists or song history. A signed profile pack
 can then add support without publishing a new Awoo MusicBot core release.
 
-KuGou connector 20.0.81.3 no longer uses KuGou's queue-rebuilding immediate-play
+KuGou connector 20.0.81.4 no longer uses KuGou's queue-rebuilding immediate-play
 payload. Immediate play and guarded fallback both insert exactly one track after
 the current item, then send KuGou's targeted internal Next command. This keeps
 the host playlist order intact and avoids the old append-and-loop behavior. On the
@@ -96,9 +96,9 @@ hash change is rejected without calling the unknown ABI.
 The three desktop-player connectors use player-scoped versions whose final
 component is the connector revision:
 
-- NetEase `3.1.37.205354` -> connector `3.1.37.205354.5`
-- KuGou `20.0.81.27563` -> connector `20.0.81.3`
-- QQ Music `22.41` -> connector `22.41.4`
+- NetEase `3.1.37.205354` -> connector `3.1.37.205354.6`
+- KuGou `20.0.81.27563` -> connector `20.0.81.4`
+- QQ Music `22.41` -> connector `22.41.5`
 
 KuGou deliberately omits its noisy final client build component:
 
@@ -106,7 +106,7 @@ KuGou deliberately omits its noisy final client build component:
 
 For example, KuGou `20.0.81.27563` uses connector branch `20.0.81`, so its
 first connector release is `20.0.81.1` and this anchor-reset revision is
-`20.0.81.3`. The noisy final KuGou build component
+`20.0.81.4`. The noisy final KuGou build component
 (`27563`) is recorded for diagnostics but does not create a new compatibility
 branch. Higher connector revisions on the same player branch update
 automatically; a player-version branch change is manual-only. The QQ connector
@@ -142,6 +142,21 @@ The stable catalog is served through:
 Release assets are signed with Ed25519. BiliNCM verifies both the signature and
 SHA-256 digest before activating a downloaded connector, and retains the
 previous version for rollback.
+
+Each release keeps two compatible packages:
+
+- The original self-contained ZIP remains in the catalog's top-level asset
+  fields. Older Awoo MusicBot versions therefore continue to install a connector
+  that carries its own .NET runtime.
+- A smaller `framework-dependent` ZIP is published in the optional
+  `frameworkDependent` catalog field. Awoo MusicBot 1.1.3 and newer prefer this
+  package and run it with a private, per-architecture .NET 8 runtime shared by
+  all connectors. Runtime download or health-check failures automatically fall
+  back to the self-contained package.
+
+Runtime packaging and connector protocol compatibility are independent. Set
+`minimumCoreVersion` only when connector behavior truly requires a newer core;
+do not raise it merely because a framework-dependent package was added.
 
 QQ Music compatibility profiles have a separate signed update catalog:
 

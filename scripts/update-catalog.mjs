@@ -8,12 +8,22 @@ const [
   sha256,
   signature,
   sizeText,
-  runtime
+  runtime,
+  frameworkAssetName,
+  frameworkSha256,
+  frameworkSignature,
+  frameworkSizeText,
+  runtimeChannel
 ] = process.argv.slice(2);
 
-if (!connectorId || !version || !assetName || !sha256 || !signature || !runtime) {
+if (
+  !connectorId || !version || !assetName || !sha256 || !signature || !runtime
+  || !frameworkAssetName || !frameworkSha256 || !frameworkSignature
+  || !frameworkSizeText || !runtimeChannel
+) {
   throw new Error(
-    'Usage: update-catalog.mjs <id> <version> <asset> <sha256> <signature> <size> <runtime>'
+    'Usage: update-catalog.mjs <id> <version> <asset> <sha256> <signature> <size> <runtime> '
+    + '<framework-asset> <framework-sha256> <framework-signature> <framework-size> <runtime-channel>'
   );
 }
 
@@ -65,7 +75,17 @@ catalog.connectors[connectorId] = {
   signature,
   publishedAt,
   downloadUrl:
-    `https://app.enkianss.us/connectors/v1/download/${connectorId}/${version}/${assetName}`
+    `https://app.enkianss.us/connectors/v1/download/${connectorId}/${version}/${assetName}`,
+  frameworkDependent: {
+    runtime,
+    runtimeChannel,
+    asset: frameworkAssetName,
+    size: Number(frameworkSizeText),
+    sha256: frameworkSha256,
+    signature: frameworkSignature,
+    downloadUrl:
+      `https://app.enkianss.us/connectors/v1/download/${connectorId}/${version}/${frameworkAssetName}`
+  }
 };
 
 fs.writeFileSync(
