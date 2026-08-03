@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-03T04:41:45.211Z",
+  "generatedAt": "2026-08-03T04:43:46.909Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -34,18 +34,27 @@
       "id": "kugou",
       "name": "酷狗音乐",
       "channel": "stable",
-      "version": "20.0.81.3",
+      "version": "20.0.81.4",
       "protocolVersion": 1,
       "minimumCoreVersion": "1.1.0",
       "playerVersionPolicy": "20.*",
       "testedPlayerVersion": "20.0.81.27563",
       "runtime": "win-x86",
-      "asset": "bilincm-connector-kugou-20.0.81.3-win-x86.zip",
-      "size": 34708054,
-      "sha256": "d9ee6d6054c2e83465cf4991116cb4e1832206794cc5db379b4f40461cf42813",
-      "signature": "bcnShLH+Z8YngdmMTOEodI1RrmuTmL+vTFSj0w4oiQ6E0QdT/rxsCkT9darA/ZulHgNBjP410b3P8j91ds7PDw==",
-      "publishedAt": "2026-08-02T15:36:40.300Z",
-      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/kugou/20.0.81.3/bilincm-connector-kugou-20.0.81.3-win-x86.zip"
+      "asset": "bilincm-connector-kugou-20.0.81.4-win-x86.zip",
+      "size": 34708045,
+      "sha256": "e41ea27b279ec961c79eaf06d57bb50bcc3b12ef2f1cbc55fc431bdc4982315d",
+      "signature": "LtzGFQAANpgEVr7epxF1+A6268C35Yv62Os9csRTMidCoDVI5gjL7Whc7GwXsR2AtYqX6cMKMnJN7+nbC4DMCw==",
+      "publishedAt": "2026-08-03T04:43:46.909Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/kugou/20.0.81.4/bilincm-connector-kugou-20.0.81.4-win-x86.zip",
+      "frameworkDependent": {
+        "runtime": "win-x86",
+        "runtimeChannel": "8.0",
+        "asset": "bilincm-connector-kugou-20.0.81.4-win-x86-framework-dependent.zip",
+        "size": 6779442,
+        "sha256": "8ccfb18ca8c7f029e3f85969fbb1f11d314ea2d57ecf10814eabc4c94aa26e2b",
+        "signature": "O7jhamx15jlXq/cjK7EjzBMUFq8AXy1euExYX1C9vm41diAs3SgR9GRmL4ydhSXIMdr482J4g8SveBrn4qzqBg==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/kugou/20.0.81.4/bilincm-connector-kugou-20.0.81.4-win-x86-framework-dependent.zip"
+      }
     },
     "qqmusic": {
       "id": "qqmusic",
