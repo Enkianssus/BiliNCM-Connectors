@@ -35,6 +35,9 @@ const GITHUB_HOSTS = new Set([
   'release-assets.githubusercontent.com',
   'githubreleases.com'
 ]);
+const NETEASE_COVER_PREFIX = '/connectors/v1/covers/netease/';
+const NETEASE_COVER_PATH =
+  /^\/connectors\/v1\/covers\/netease\/([A-Za-z0-9_-]{16,64}={0,2})\/([0-9]{1,20})\.jpg$/;
 
 export default {
   async fetch(request, env) {
@@ -45,6 +48,14 @@ export default {
         status: 204,
         headers: corsHeaders()
       });
+    }
+
+    const neteaseCover = url.pathname.match(NETEASE_COVER_PATH);
+    if (neteaseCover) {
+      return proxyNeteaseCover(request, neteaseCover);
+    }
+    if (url.pathname.startsWith(NETEASE_COVER_PREFIX)) {
+      return jsonResponse({ error: 'Invalid NetEase cover path.' }, 404);
     }
 
     if (url.pathname === '/' || url.pathname === '/index.html') {
@@ -749,6 +760,60 @@ async function sha256Hex(value) {
   return [...new Uint8Array(digest)]
     .map(byte => byte.toString(16).padStart(2, '0'))
     .join('');
+}
+
+async function proxyNeteaseCover(request, match) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return jsonResponse({ error: 'Method not allowed.' }, 405);
+  }
+
+  const [, token, picId] = match;
+  const upstream =
+    `https://p1.music.126.net/${token}/${picId}.jpg?param=600y600`;
+  let response;
+  try {
+    response = await fetch(upstream, {
+      method: 'GET',
+      headers: {
+        Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        Referer: 'https://music.163.com/',
+        'User-Agent': 'AwooMusicBot-Netease-Cover-Proxy/1.0'
+      },
+      cf: {
+        cacheEverything: true,
+        cacheTtl: 604800
+      }
+    });
+  } catch (error) {
+    return jsonResponse(
+      {
+        error: 'NetEase cover request failed.',
+        details: String(error?.message || error)
+      },
+      502
+    );
+  }
+
+  if (!response.ok) {
+    return jsonResponse(
+      { error: `NetEase cover returned HTTP ${response.status}.` },
+      response.status
+    );
+  }
+
+  const headers = new Headers(response.headers);
+  headers.delete('set-cookie');
+  headers.set('Access-Control-Allow-Origin', '*');
+  headers.set('Cache-Control', 'public, max-age=604800, immutable');
+  headers.set(
+    'Content-Type',
+    response.headers.get('Content-Type') || 'image/jpeg'
+  );
+  return new Response(request.method === 'HEAD' ? null : response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
 }
 
 async function proxyCatalog(request) {
