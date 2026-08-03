@@ -157,8 +157,12 @@ export default {
       const [, connectorId, version, assetName] = connectorDownload;
       const assetPrefix =
         `bilincm-connector-${connectorId}-${version}-win-x`;
-      const validAsset = assetName === `${assetPrefix}86.zip`
-        || assetName === `${assetPrefix}64.zip`;
+      const validAsset = [
+        `${assetPrefix}86.zip`,
+        `${assetPrefix}64.zip`,
+        `${assetPrefix}86-framework-dependent.zip`,
+        `${assetPrefix}64-framework-dependent.zip`
+      ].includes(assetName);
       if (!CONNECTOR_IDS.has(connectorId) || !validAsset) {
         return jsonResponse(
           { error: 'Invalid connector asset.' },
