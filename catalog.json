@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-03T04:40:15.086Z",
+  "generatedAt": "2026-08-03T04:41:45.211Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -68,18 +68,27 @@
       "id": "folia",
       "name": "Folia",
       "channel": "stable",
-      "version": "1.1.1",
+      "version": "1.1.2",
       "protocolVersion": 1,
       "minimumCoreVersion": "1.1.0",
       "playerVersionPolicy": "Stage API",
       "testedPlayerVersion": "Stage API",
       "runtime": "win-x86",
-      "asset": "bilincm-connector-folia-1.1.1-win-x86.zip",
-      "size": 34663397,
-      "sha256": "2e96e4abb633a94e5ada578fca96015d9ac6d58ac97aa16d9b651ee2893b23e1",
-      "signature": "CAETsh++psQ6HrKZ1Hvk0OZdeB5Y8paf0EruyAkFJcZFAjKnI+WmXLlOvnB7fbH09CJ8OGYpIM815laIvGhiDA==",
-      "publishedAt": "2026-08-02T15:41:22.857Z",
-      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/folia/1.1.1/bilincm-connector-folia-1.1.1-win-x86.zip"
+      "asset": "bilincm-connector-folia-1.1.2-win-x86.zip",
+      "size": 34663392,
+      "sha256": "d0da80c2f81019fbc743a1973de08b96df73240bde755bb348155d6dcb4543a6",
+      "signature": "PjWyQB+f0eiVXZv1ktBSBndiCe6PISeaDlsNPARyGQ1rnPIN5QVC4IiORq4pPkHtY0GkAo3LxgyCH/4PTxUKBA==",
+      "publishedAt": "2026-08-03T04:41:45.211Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/folia/1.1.2/bilincm-connector-folia-1.1.2-win-x86.zip",
+      "frameworkDependent": {
+        "runtime": "win-x86",
+        "runtimeChannel": "8.0",
+        "asset": "bilincm-connector-folia-1.1.2-win-x86-framework-dependent.zip",
+        "size": 6714731,
+        "sha256": "43a943371063b9cf454264083724b99ac6c085f611b54054500683a4f88598fb",
+        "signature": "PN3pNIAXI0XK55psLoOFkO5dlWwZfqlcWFw9djnZiRK2Gm8kJAIH1tE+VkNHcQTJf41KOvkZ+8mUt7GnSmBODQ==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/folia/1.1.2/bilincm-connector-folia-1.1.2-win-x86-framework-dependent.zip"
+      }
     }
   }
 }
