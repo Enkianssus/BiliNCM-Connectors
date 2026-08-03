@@ -23,6 +23,10 @@ const CORE_PROJECTS = {
 
 const CONNECTOR_REPO = 'Enkianssus/BiliNCM-Connectors';
 const CONNECTOR_IDS = new Set(['netease', 'kugou', 'qqmusic', 'folia']);
+const OFFICIAL_OVERLAY_REPO =
+  'Enkianssus/AwooMusicBot-Overlay-Default';
+const OFFICIAL_OVERLAY_DESCRIPTOR = 'awoo-overlay.json';
+const OFFICIAL_OVERLAY_ARCHIVE = 'awoo-overlay.zip';
 const GITHUB_HOSTS = new Set([
   'github.com',
   'api.github.com',
@@ -92,6 +96,31 @@ export default {
       && request.method === 'GET'
     ) {
       return listCompatibilityReports(request, env);
+    }
+
+    if (url.pathname === '/mods/v1/official/manifest.json') {
+      return proxyGitHub(
+        request,
+        `https://github.com/${OFFICIAL_OVERLAY_REPO}/releases/latest/download/`
+          + OFFICIAL_OVERLAY_DESCRIPTOR,
+        {
+          contentType: 'application/json; charset=utf-8',
+          cacheControl: 'public, max-age=300'
+        }
+      );
+    }
+
+    if (url.pathname === '/mods/v1/official/download/awoo-overlay.zip') {
+      return proxyGitHub(
+        request,
+        `https://github.com/${OFFICIAL_OVERLAY_REPO}/releases/latest/download/`
+          + OFFICIAL_OVERLAY_ARCHIVE,
+        {
+          downloadName: OFFICIAL_OVERLAY_ARCHIVE,
+          contentType: 'application/zip',
+          cacheControl: 'public, max-age=300'
+        }
+      );
     }
 
     if (url.pathname === '/connectors/v1/profiles/qqmusic/catalog.json') {
