@@ -19,7 +19,7 @@ new BiliNCM core release.
 All connectors use newline-delimited JSON on standard input/output. Protocol
 version 1 supports `ping`, `probe`, `search`, `execute`, and `shutdown`.
 Optional features are negotiated independently, so adding one does not break
-older cores or connectors. NetEase `3.1.37.205354.6` advertises
+older cores or connectors. NetEase `3.1.37.205354.7` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
@@ -85,6 +85,13 @@ bridge fallback: every 2 seconds while the event bridge is unavailable, and at
 most once every 5 minutes while Redux events and the 15-second state heartbeat
 remain healthy.
 
+NetEase `3.1.37.205354.7` also handles overseas API behavior. Search requests
+use a Chinese routing header because the public endpoint returns an encrypted
+string instead of a result object to some US IPs. Album artwork is served
+through the dedicated `appdownload` Worker, which accepts only a signed
+NetEase image token plus a numeric picture ID and therefore is not an open
+proxy.
+
 CEF compatibility uses two levels. The exact tested build is enabled directly.
 An unknown patch build is tried only when both CEF public API hashes and the
 CEF/Chromium major versions still match; it must then pass the existing host
@@ -96,7 +103,7 @@ hash change is rejected without calling the unknown ABI.
 The three desktop-player connectors use player-scoped versions whose final
 component is the connector revision:
 
-- NetEase `3.1.37.205354` -> connector `3.1.37.205354.6`
+- NetEase `3.1.37.205354` -> connector `3.1.37.205354.7`
 - KuGou `20.0.81.27563` -> connector `20.0.81.4`
 - QQ Music `22.41` -> connector `22.41.5`
 

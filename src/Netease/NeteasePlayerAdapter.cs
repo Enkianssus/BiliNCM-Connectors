@@ -208,16 +208,21 @@ internal sealed class NeteasePlayerAdapter :
         string query,
         CancellationToken cancellationToken)
     {
-        using var content = new FormUrlEncodedContent(
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "https://music.163.com/api/search/get/web");
+        request.Content = new FormUrlEncodedContent(
         [
             new KeyValuePair<string, string>("s", query),
             new KeyValuePair<string, string>("type", "1"),
             new KeyValuePair<string, string>("limit", "20"),
             new KeyValuePair<string, string>("offset", "0")
         ]);
-        using var response = await _httpClient.PostAsync(
-            "https://music.163.com/api/search/get/web",
-            content,
+        request.Headers.Referrer = new Uri("https://music.163.com/");
+        AddChinaBypassHeaders(request);
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
             cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(
@@ -226,7 +231,9 @@ internal sealed class NeteasePlayerAdapter :
             stream,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        if (!document.RootElement.TryGetProperty("result", out var result)
+        if (document.RootElement.ValueKind != JsonValueKind.Object
+            || !document.RootElement.TryGetProperty("result", out var result)
+            || result.ValueKind != JsonValueKind.Object
             || !result.TryGetProperty("songs", out var songs)
             || songs.ValueKind != JsonValueKind.Array)
         {
@@ -260,12 +267,7 @@ internal sealed class NeteasePlayerAdapter :
                 "https://music.163.com/api/v3/song/detail"
                 + $"?c={Uri.EscapeDataString($"[{{\"id\":{songId}}}]")}");
             request.Headers.Referrer = new Uri("https://music.163.com/");
-            request.Headers.TryAddWithoutValidation(
-                "X-Real-IP",
-                "111.206.176.1");
-            request.Headers.TryAddWithoutValidation(
-                "X-Forwarded-For",
-                "111.206.176.1");
+            AddChinaBypassHeaders(request);
             using var response = await _httpClient.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
@@ -1158,9 +1160,39 @@ internal sealed class NeteasePlayerAdapter :
             cover = BuildCoverUrlFromPicId(picId);
         }
 
-        return cover.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+        cover = cover.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
             ? $"https://{cover[7..]}"
             : cover;
+        return BuildCoverProxyUrl(cover);
+    }
+
+    private static string BuildCoverProxyUrl(string coverUrl)
+    {
+        if (!Uri.TryCreate(coverUrl, UriKind.Absolute, out var uri)
+            || !Regex.IsMatch(
+                uri.Host,
+                @"^p[1-9]\.music\.126\.net$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            return coverUrl;
+        }
+
+        var match = Regex.Match(
+            uri.AbsolutePath,
+            @"^/(?<token>[A-Za-z0-9_-]{16,64}={0,2})/(?<id>[0-9]{1,20})\.jpg$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success
+            ? "https://app.enkianss.us/connectors/v1/covers/netease/"
+              + $"{match.Groups["token"].Value}/"
+              + $"{match.Groups["id"].Value}.jpg"
+            : coverUrl;
+    }
+
+    private static void AddChinaBypassHeaders(HttpRequestMessage request)
+    {
+        const string chinaIp = "111.206.176.1";
+        request.Headers.TryAddWithoutValidation("X-Real-IP", chinaIp);
+        request.Headers.TryAddWithoutValidation("X-Forwarded-For", chinaIp);
     }
 
     private static string BuildCoverUrlFromPicId(string picId)
