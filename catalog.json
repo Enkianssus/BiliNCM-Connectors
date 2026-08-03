@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-02T15:41:22.857Z",
+  "generatedAt": "2026-08-03T04:40:15.086Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -8,18 +8,27 @@
       "id": "netease",
       "name": "网易云音乐",
       "channel": "stable",
-      "version": "3.1.37.205354.5",
+      "version": "3.1.37.205354.6",
       "protocolVersion": 1,
       "minimumCoreVersion": "1.1.0",
       "playerVersionPolicy": "3.1.*",
       "testedPlayerVersion": "3.1.37.205354",
       "runtime": "win-x64",
-      "asset": "bilincm-connector-netease-3.1.37.205354.5-win-x64.zip",
-      "size": 37396238,
-      "sha256": "741ee2e12fc438450b6ec69f3986165d4080581e41816458e6e345d1e5011eb4",
-      "signature": "dQ32s2o45CaxcoQ/c3zwf2n98zsbCcoG0LeN00SVB+G2t1VBWeYySWo4s+ydFz684aS0MA1P2irAD2T8pJ/uBw==",
-      "publishedAt": "2026-08-02T15:35:00.649Z",
-      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.5/bilincm-connector-netease-3.1.37.205354.5-win-x64.zip"
+      "asset": "bilincm-connector-netease-3.1.37.205354.6-win-x64.zip",
+      "size": 37391351,
+      "sha256": "2c205884433f4d4e429c5f749fb47255ef98dac3656aa1ed14867f0c501e416f",
+      "signature": "c8Ya6IXs0xjWk0BPmRkekc0YACor83CDtnxOF2FK1HYuPCJDsS64uWvJjhzllHFI5t0AHXdGusNZr3i22gAdBA==",
+      "publishedAt": "2026-08-03T04:40:15.086Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.6/bilincm-connector-netease-3.1.37.205354.6-win-x64.zip",
+      "frameworkDependent": {
+        "runtime": "win-x64",
+        "runtimeChannel": "8.0",
+        "asset": "bilincm-connector-netease-3.1.37.205354.6-win-x64-framework-dependent.zip",
+        "size": 6889739,
+        "sha256": "baa364b8bb2f6f346256d0e7733db2238c71762c6e14fdbb27afc46b2891a2f3",
+        "signature": "A4wPXAsS9ySSO85x4dQXFTlVVlvhMVCh1ohXmdrU5DZRTdzuIsG4q0zmsJjFd+ZcwlHCwFXVvU/g8wu9zZQkDg==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.6/bilincm-connector-netease-3.1.37.205354.6-win-x64-framework-dependent.zip"
+      }
     },
     "kugou": {
       "id": "kugou",
