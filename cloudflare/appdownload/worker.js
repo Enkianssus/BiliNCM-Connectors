@@ -27,6 +27,9 @@ const OFFICIAL_OVERLAY_REPO =
   'Enkianssus/AwooMusicBot-Overlay-Default';
 const OFFICIAL_OVERLAY_DESCRIPTOR = 'awoo-overlay.json';
 const OFFICIAL_OVERLAY_ARCHIVE = 'awoo-overlay.zip';
+const RETRO_CMD_OVERLAY_REPO =
+  'Enkianssus/AwooMusicBot-Overlay-RetroCMD';
+const RETRO_CMD_OVERLAY_ID = 'us.enkianss.awoo.retro-cmd';
 const GITHUB_HOSTS = new Set([
   'github.com',
   'api.github.com',
@@ -130,6 +133,31 @@ export default {
           downloadName: OFFICIAL_OVERLAY_ARCHIVE,
           contentType: 'application/zip',
           cacheControl: 'public, max-age=300'
+        }
+      );
+    }
+
+    if (url.pathname === '/mods/v1/retro-cmd/manifest.json') {
+      return proxyOverlayManifest(request, {
+        repo: RETRO_CMD_OVERLAY_REPO,
+        expectedId: RETRO_CMD_OVERLAY_ID,
+        downloadPath: '/mods/v1/retro-cmd/download'
+      });
+    }
+
+    const retroCmdDownload = url.pathname.match(
+      /^\/mods\/v1\/retro-cmd\/download\/([0-9]+(?:\.[0-9]+){2})\/awoo-overlay\.zip$/
+    );
+    if (retroCmdDownload) {
+      const version = retroCmdDownload[1];
+      return proxyGitHub(
+        request,
+        `https://github.com/${RETRO_CMD_OVERLAY_REPO}/releases/download/`
+          + `v${version}/${OFFICIAL_OVERLAY_ARCHIVE}`,
+        {
+          downloadName: OFFICIAL_OVERLAY_ARCHIVE,
+          contentType: 'application/zip',
+          cacheControl: 'public, max-age=31536000, immutable'
         }
       );
     }
@@ -921,6 +949,83 @@ async function proxyGitHub(request, target, options = {}) {
   }
 
   return copyProxyResponse(response, options);
+}
+
+async function proxyOverlayManifest(request, options) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return jsonResponse({ error: 'Method not allowed.' }, 405);
+  }
+
+  let response;
+  try {
+    response = await fetch(
+      `https://github.com/${options.repo}/releases/latest/download/`
+        + OFFICIAL_OVERLAY_DESCRIPTOR,
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'AwooMusicBot-Overlay-Manifest-Proxy/1.0'
+        },
+        redirect: 'follow',
+        cf: {
+          cacheEverything: true,
+          cacheTtl: 300
+        }
+      }
+    );
+  } catch (error) {
+    return jsonResponse(
+      {
+        error: 'Overlay manifest request failed.',
+        details: String(error?.message || error)
+      },
+      502
+    );
+  }
+
+  if (!response.ok) {
+    return jsonResponse(
+      { error: `Overlay manifest returned HTTP ${response.status}.` },
+      response.status
+    );
+  }
+
+  let manifest;
+  try {
+    manifest = await response.json();
+  } catch {
+    return jsonResponse({ error: 'Overlay manifest is not valid JSON.' }, 502);
+  }
+
+  const version = String(manifest?.version || '');
+  const packageSize = Number(manifest?.package?.size);
+  const packageSha256 = String(manifest?.package?.sha256 || '');
+  if (
+    manifest?.schemaVersion !== 1
+    || manifest?.packageType !== 'awoo-overlay'
+    || manifest?.id !== options.expectedId
+    || !/^[0-9]+(?:\.[0-9]+){2}$/.test(version)
+    || !Number.isSafeInteger(packageSize)
+    || packageSize <= 0
+    || !/^[a-f0-9]{64}$/i.test(packageSha256)
+  ) {
+    return jsonResponse({ error: 'Overlay manifest is invalid.' }, 502);
+  }
+
+  manifest.package.url =
+    `https://app.enkianss.us${options.downloadPath}/`
+    + `${version}/${OFFICIAL_OVERLAY_ARCHIVE}`;
+
+  const body = JSON.stringify(manifest, null, 2);
+  return new Response(request.method === 'HEAD' ? null : `${body}\n`, {
+    status: 200,
+    headers: {
+      ...corsHeaders(),
+      'Cache-Control': 'public, max-age=300',
+      'Content-Type': 'application/json; charset=utf-8'
+    }
+  });
 }
 
 function copyProxyResponse(response, options = {}) {
