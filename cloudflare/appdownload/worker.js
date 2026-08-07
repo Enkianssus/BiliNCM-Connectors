@@ -119,7 +119,8 @@ export default {
           + OFFICIAL_OVERLAY_DESCRIPTOR,
         {
           contentType: 'application/json; charset=utf-8',
-          cacheControl: 'public, max-age=300'
+          cacheControl: 'public, max-age=300',
+          cacheTtl: 300
         }
       );
     }
@@ -132,7 +133,21 @@ export default {
         {
           downloadName: OFFICIAL_OVERLAY_ARCHIVE,
           contentType: 'application/zip',
-          cacheControl: 'public, max-age=300'
+          cacheControl: 'public, max-age=300',
+          cacheTtl: 300
+        }
+      );
+    }
+
+    if (url.pathname === '/mods/v1/official/preview.png') {
+      return proxyGitHub(
+        request,
+        `https://raw.githubusercontent.com/${OFFICIAL_OVERLAY_REPO}/main/`
+          + 'assets/overlay-preview.png',
+        {
+          contentType: 'image/png',
+          cacheControl: 'public, max-age=3600',
+          cacheTtl: 3600
         }
       );
     }
@@ -143,6 +158,33 @@ export default {
         expectedId: RETRO_CMD_OVERLAY_ID,
         downloadPath: '/mods/v1/retro-cmd/download'
       });
+    }
+
+    if (url.pathname === '/mods/v1/retro-cmd/download/awoo-overlay.zip') {
+      return proxyGitHub(
+        request,
+        `https://github.com/${RETRO_CMD_OVERLAY_REPO}/releases/latest/download/`
+          + OFFICIAL_OVERLAY_ARCHIVE,
+        {
+          downloadName: OFFICIAL_OVERLAY_ARCHIVE,
+          contentType: 'application/zip',
+          cacheControl: 'public, max-age=300',
+          cacheTtl: 300
+        }
+      );
+    }
+
+    if (url.pathname === '/mods/v1/retro-cmd/preview.png') {
+      return proxyGitHub(
+        request,
+        `https://raw.githubusercontent.com/${RETRO_CMD_OVERLAY_REPO}/main/`
+          + 'assets/overlay-preview.png',
+        {
+          contentType: 'image/png',
+          cacheControl: 'public, max-age=3600',
+          cacheTtl: 3600
+        }
+      );
     }
 
     const retroCmdDownload = url.pathname.match(
@@ -927,7 +969,7 @@ async function proxyGitHub(request, target, options = {}) {
       cf: options.cacheControl
         ? {
             cacheEverything: true,
-            cacheTtl: 31536000
+            cacheTtl: options.cacheTtl || 31536000
           }
         : undefined
     });
@@ -1297,6 +1339,42 @@ function renderHome(host) {
     `)
     .join('');
 
+  const overlayCards = [
+    {
+      name: '嗷呜默认组件',
+      badge: '现代简约',
+      description:
+        '适合 OBS、直播姬浏览器捕捉的透明点歌组件，清晰展示当前歌曲、待播队列与服务状态。',
+      preview: '/mods/v1/official/preview.png',
+      download: '/mods/v1/official/download/awoo-overlay.zip',
+      repository: OFFICIAL_OVERLAY_REPO
+    },
+    {
+      name: '复古 CMD 点歌组件',
+      badge: 'RetroCMD',
+      description:
+        '复古 Windows 命令行窗口风格，保留相同的信息布局，并让唱片封面缓慢旋转。',
+      preview: '/mods/v1/retro-cmd/preview.png',
+      download: '/mods/v1/retro-cmd/download/awoo-overlay.zip',
+      repository: RETRO_CMD_OVERLAY_REPO
+    }
+  ].map(mod => `
+    <article class="mod-card">
+      <a class="preview" href="${mod.preview}" target="_blank" rel="noreferrer">
+        <img src="${mod.preview}" alt="${escapeHtml(mod.name)}预览图" loading="lazy">
+      </a>
+      <div class="mod-body">
+        <span class="badge">${escapeHtml(mod.badge)}</span>
+        <h3>${escapeHtml(mod.name)}</h3>
+        <p>${escapeHtml(mod.description)}</p>
+        <div class="actions">
+          <a class="primary" href="${mod.download}">本站下载 ZIP</a>
+          <a href="https://github.com/${mod.repository}">源码与说明</a>
+        </div>
+      </div>
+    </article>
+  `).join('');
+
   return `<!doctype html>
   <html lang="zh-CN">
   <head>
@@ -1306,12 +1384,14 @@ function renderHome(host) {
     <style>
       :root{color-scheme:dark;--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--green:#238636}
       *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-      main{width:min(720px,calc(100% - 32px));margin:48px auto}.panel{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:32px;box-shadow:0 20px 50px #0008}
+      main{width:min(1040px,calc(100% - 32px));margin:48px auto}.panel{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:32px;box-shadow:0 20px 50px #0008}
       h1{margin:0 0 8px;color:#fff}.status{color:#3fb950;font-size:13px}.card{margin-top:28px;padding-top:24px;border-top:1px solid var(--border)}
-      h2{font-size:18px;color:#fff}p{line-height:1.7;color:var(--muted)}.actions{display:flex;gap:12px;flex-wrap:wrap}.badge{display:inline-block;padding:4px 9px;border-radius:999px;background:#21262d;border:1px solid var(--border);color:#8b949e;font-size:12px;font-weight:700}.badge.featured{background:#23863633;border-color:#3fb95066;color:#56d364}
+      h2{font-size:18px;color:#fff}h3{font-size:18px;color:#fff;margin:10px 0 8px}p{line-height:1.7;color:var(--muted)}.actions{display:flex;gap:12px;flex-wrap:wrap}.badge{display:inline-block;padding:4px 9px;border-radius:999px;background:#21262d;border:1px solid var(--border);color:#8b949e;font-size:12px;font-weight:700}.badge.featured{background:#23863633;border-color:#3fb95066;color:#56d364}
       a{color:var(--text);text-decoration:none;background:#21262d;border:1px solid var(--border);border-radius:8px;padding:11px 18px;font-weight:650}
       a.primary{background:var(--green);color:#fff}.endpoint{font-family:ui-monospace,Consolas,monospace;background:#010409;border:1px solid var(--border);padding:12px;border-radius:8px;overflow:auto}
+      .section-intro{margin-top:-4px}.mod-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:18px}.mod-card{overflow:hidden;border:1px solid var(--border);border-radius:14px;background:#0d1117}.preview{display:flex;width:100%;aspect-ratio:16/7;align-items:center;justify-content:center;padding:0;border:0;border-radius:0;background:linear-gradient(135deg,#f5f5f5,#d8d8d8)}.preview img{display:block;width:100%;height:100%;object-fit:contain}.mod-body{padding:20px}.mod-body p{min-height:76px;margin:0 0 16px}.install-guide{margin-top:20px;padding:20px;border:1px solid #388bfd55;border-radius:12px;background:#1f6feb12}.install-guide h3{margin-top:0}.install-guide ol{margin:8px 0 0;padding-left:22px;color:var(--muted);line-height:1.9}.install-guide strong{color:var(--text)}
       footer{margin-top:30px;color:#484f58;font-size:12px;text-align:center}
+      @media(max-width:760px){main{margin:20px auto}.panel{padding:20px}.mod-grid{grid-template-columns:1fr}.mod-body p{min-height:0}}
     </style>
   </head>
   <body>
@@ -1319,6 +1399,19 @@ function renderHome(host) {
       <h1>Enkianssus App Hub</h1>
       <div class="status">● Cloudflare 分发节点运行中</div>
       ${cards}
+      <section class="card">
+        <h2>嗷呜点歌机 Mod UI</h2>
+        <p class="section-intro">为 OBS 或直播姬浏览器捕捉准备的只读展示组件。下载后可以在点歌机中安装、切换，OBS 地址仍然保持不变。</p>
+        <div class="mod-grid">${overlayCards}</div>
+        <div class="install-guide">
+          <h3>如何安装</h3>
+          <ol>
+            <li>下载喜欢的 <strong>Mod UI ZIP</strong>，无需解压。</li>
+            <li>打开点歌机控制面板的 <strong>运行状态 → Mod UI</strong>。</li>
+            <li>点击添加并选择 ZIP，或把 ZIP 直接拖入安装区域；安装完成后会自动启用，也可随时切换。</li>
+          </ol>
+        </div>
+      </section>
       <section class="card">
         <h2>嗷呜点歌机播放器连接器</h2>
         <p>网易云音乐、酷狗音乐、QQ 音乐和 Folia 连接器独立更新，不需要同步升级嗷呜点歌机本体。</p>
