@@ -16,7 +16,7 @@ catalog.profiles.qqmusic = {
   id: 'qqmusic',
   version,
   schemaVersion: 1,
-  minimumConnectorVersion: '1.4.0',
+  minimumConnectorVersion: '22.51.1',
   asset,
   size: Number(sizeText),
   sha256,

@@ -56,6 +56,7 @@ internal static class QQMusicNativeNextTransport
     private const int HiddenCategoryIdOffset = 0xC8;
     private const int HiddenCategoryCountOffset = 0xCC;
     private const int HiddenCategoryIndexOffset = 0xD0;
+    private const int EmptyWideStringOffset = 0xD4;
 
     private const uint ProcessVmOperation = 0x0008;
     private const uint ProcessVmRead = 0x0010;
@@ -594,12 +595,19 @@ internal static class QQMusicNativeNextTransport
         emitter.Bytes(0x89, 0x87);
         emitter.UInt32(VectorOffset + 8);
 
-        // Same call shape captured from the real context-menu action.
+        // AddSongs has two caller-cleaned stack arguments. QQ Music's own
+        // "play next" caller passes a non-null pointer to an empty UTF-16
+        // context string. A null pointer selects a different synchronous path
+        // that can block the UI thread, while omitting the argument makes the
+        // callee interpret unrelated stack data as a string. The remote data
+        // block is zero-initialized, so this address is a stable L"" value.
         emitter.Bytes(0x8B, 0xCE, 0x8D, 0x97);
         emitter.UInt32(VectorOffset);
+        emitter.Byte(0x68);
+        emitter.UInt32(checked(data + EmptyWideStringOffset));
         emitter.Bytes(0x6A, 0x00, 0xB8);
         emitter.UInt32(addSongs);
-        emitter.Bytes(0xFF, 0xD0, 0x83, 0xC4, 0x04);
+        emitter.Bytes(0xFF, 0xD0, 0x83, 0xC4, 0x08);
         emitter.Bytes(0x89, 0x47, 0x10);
         emitter.MovDwordAtEdi(0x00, 4);
 
