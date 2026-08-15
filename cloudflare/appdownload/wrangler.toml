@@ -1,4 +1,5 @@
 name = "appdownload"
+account_id = "48a310efe84107a68b7ea095719805bb"
 main = "worker.js"
 compatibility_date = "2026-05-12"
 workers_dev = true
