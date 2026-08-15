@@ -4,26 +4,47 @@ import path from 'node:path';
 const [
   connectorId,
   version,
-  assetName,
-  sha256,
-  signature,
-  sizeText,
+  awooAssetName,
+  awooSha256,
+  awooSignature,
+  awooSizeText,
+  legacyAssetName,
+  legacySha256,
+  legacySignature,
+  legacySizeText,
   runtime,
-  frameworkAssetName,
-  frameworkSha256,
-  frameworkSignature,
-  frameworkSizeText,
+  awooFrameworkAssetName,
+  awooFrameworkSha256,
+  awooFrameworkSignature,
+  awooFrameworkSizeText,
+  legacyFrameworkAssetName,
+  legacyFrameworkSha256,
+  legacyFrameworkSignature,
+  legacyFrameworkSizeText,
   runtimeChannel
 ] = process.argv.slice(2);
 
 if (
-  !connectorId || !version || !assetName || !sha256 || !signature || !runtime
-  || !frameworkAssetName || !frameworkSha256 || !frameworkSignature
-  || !frameworkSizeText || !runtimeChannel
+  !connectorId || !version
+  || !awooAssetName || !awooSha256 || !awooSignature || !awooSizeText
+  || !legacyAssetName || !legacySha256 || !legacySignature || !legacySizeText
+  || !runtime
+  || !awooFrameworkAssetName || !awooFrameworkSha256
+  || !awooFrameworkSignature || !awooFrameworkSizeText
+  || !legacyFrameworkAssetName || !legacyFrameworkSha256
+  || !legacyFrameworkSignature || !legacyFrameworkSizeText
+  || !runtimeChannel
 ) {
   throw new Error(
-    'Usage: update-catalog.mjs <id> <version> <asset> <sha256> <signature> <size> <runtime> '
-    + '<framework-asset> <framework-sha256> <framework-signature> <framework-size> <runtime-channel>'
+    'Usage: update-catalog.mjs <id> <version> '
+    + '<awoo-asset> <awoo-sha256> <awoo-signature> <awoo-size> '
+    + '<legacy-asset> <legacy-sha256> <legacy-signature> <legacy-size> '
+    + '<runtime> '
+    + '<awoo-framework-asset> <awoo-framework-sha256> '
+    + '<awoo-framework-signature> <awoo-framework-size> '
+    + '<legacy-framework-asset> <legacy-framework-sha256> '
+    + '<legacy-framework-signature> <legacy-framework-size> '
+    + '<runtime-channel>'
   );
 }
 
@@ -69,22 +90,40 @@ catalog.connectors[connectorId] = {
   playerVersionPolicy: supported[connectorId].playerVersionPolicy,
   testedPlayerVersion: supported[connectorId].testedPlayerVersion,
   runtime,
-  asset: assetName,
-  size: Number(sizeText),
-  sha256,
-  signature,
+  asset: legacyAssetName,
+  size: Number(legacySizeText),
+  sha256: legacySha256,
+  signature: legacySignature,
   publishedAt,
   downloadUrl:
-    `https://app.enkianss.us/connectors/v1/download/${connectorId}/${version}/${assetName}`,
+    `https://app.enkianss.us/connectors/v1/download/${connectorId}/${version}/${legacyAssetName}`,
+  awooPackage: {
+    asset: awooAssetName,
+    size: Number(awooSizeText),
+    sha256: awooSha256,
+    signature: awooSignature,
+    downloadUrl:
+      `https://app.enkianss.us/connectors/v1/download/${connectorId}/${version}/${awooAssetName}`
+  },
   frameworkDependent: {
     runtime,
     runtimeChannel,
-    asset: frameworkAssetName,
-    size: Number(frameworkSizeText),
-    sha256: frameworkSha256,
-    signature: frameworkSignature,
+    asset: legacyFrameworkAssetName,
+    size: Number(legacyFrameworkSizeText),
+    sha256: legacyFrameworkSha256,
+    signature: legacyFrameworkSignature,
     downloadUrl:
-      `https://app.enkianss.us/connectors/v1/download/${connectorId}/${version}/${frameworkAssetName}`
+      `https://app.enkianss.us/connectors/v1/download/${connectorId}/${version}/${legacyFrameworkAssetName}`
+  },
+  awooFrameworkDependent: {
+    runtime,
+    runtimeChannel,
+    asset: awooFrameworkAssetName,
+    size: Number(awooFrameworkSizeText),
+    sha256: awooFrameworkSha256,
+    signature: awooFrameworkSignature,
+    downloadUrl:
+      `https://app.enkianss.us/connectors/v1/download/${connectorId}/${version}/${awooFrameworkAssetName}`
   }
 };
 

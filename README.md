@@ -1,20 +1,20 @@
 # Awoo MusicBot Connectors
 
-Independent native player connectors for Awoo MusicBot (formerly BiliNCM).
+Independent native player connectors for Awoo MusicBot.
 
-The repository intentionally contains no BiliNCM UI, danmaku, account,
+The repository intentionally contains no Awoo MusicBot UI, danmaku, account,
 permission, queue, HTTP API, or WebSocket server code. Each connector is built
 and versioned independently so a player compatibility fix does not require a
-new BiliNCM core release.
+new Awoo MusicBot core release.
 
 ## Connectors
 
 | Connector | Executable | Release tag |
 | --- | --- | --- |
-| NetEase Cloud Music | `BiliNCM.Connector.Netease.exe` | `netease-vX.Y.Z` |
-| KuGou Music | `BiliNCM.Connector.Kugou.exe` | `kugou-vX.Y.Z` |
-| QQ Music | `BiliNCM.Connector.QQMusic.exe` | `qqmusic-vX.Y.Z` |
-| Folia | `BiliNCM.Connector.Folia.exe` | `folia-vX.Y.Z` |
+| NetEase Cloud Music | `Awoo.Connector.Netease.exe` | `netease-vX.Y.Z` |
+| KuGou Music | `Awoo.Connector.Kugou.exe` | `kugou-vX.Y.Z` |
+| QQ Music | `Awoo.Connector.QQMusic.exe` | `qqmusic-vX.Y.Z` |
+| Folia | `Awoo.Connector.Folia.exe` | `folia-vX.Y.Z` |
 
 All connectors use newline-delimited JSON on standard input/output. Protocol
 version 1 supports `ping`, `probe`, `search`, `execute`, and `shutdown`.
@@ -56,7 +56,8 @@ failed profiles retain the old guarded fallback and explicitly ask the user to
 update the KuGou connector.
 
 The Folia connector talks only to the local Stage HTTP/WebSocket service on
-port 32107. BiliNCM passes `BILINCM_FOLIA_TOKEN` to the child process at
+port 32107. Awoo MusicBot passes the compatibility environment variable
+`BILINCM_FOLIA_TOKEN` to the child process at
 startup; the token is not written into the connector installation. Numeric
 NetEase IDs are validated in parallel with Stage search, and exact ID results
 include song, artist, album, and cover metadata.
@@ -103,8 +104,8 @@ hash change is rejected without calling the unknown ABI.
 The three desktop-player connectors use player-scoped versions whose final
 component is the connector revision:
 
-- NetEase `3.1.37.205354` -> connector `3.1.37.205354.8`
-- KuGou `20.0.81.27563` -> connector `20.0.81.4`
+- NetEase `3.1.37.205354` -> connector `3.1.37.205354.9`
+- KuGou `20.0.81.27563` -> connector `20.0.81.5`
 - QQ Music `22.41` -> connector `22.41.5`
 
 KuGou deliberately omits its noisy final client build component:
@@ -146,20 +147,20 @@ The stable catalog is served through:
 
 `https://app.enkianss.us/connectors/v1/catalog.json`
 
-Release assets are signed with Ed25519. BiliNCM verifies both the signature and
+Release assets are signed with Ed25519. Awoo MusicBot verifies both the signature and
 SHA-256 digest before activating a downloaded connector, and retains the
 previous version for rollback.
 
-Each release keeps two compatible packages:
+Each release publishes Awoo-named packages in both deployment forms:
 
-- The original self-contained ZIP remains in the catalog's top-level asset
-  fields. Older Awoo MusicBot versions therefore continue to install a connector
-  that carries its own .NET runtime.
-- A smaller `framework-dependent` ZIP is published in the optional
-  `frameworkDependent` catalog field. Awoo MusicBot 1.1.3 and newer prefer this
-  package and run it with a private, per-architecture .NET 8 runtime shared by
-  all connectors. Runtime download or health-check failures automatically fall
-  back to the self-contained package.
+- The self-contained ZIP carries its own .NET runtime.
+- The smaller `framework-dependent` ZIP uses Awoo MusicBot's private,
+  per-architecture .NET 8 runtime shared by all connectors. Runtime download or
+  health-check failures automatically fall back to the self-contained package.
+- Signed legacy-name aliases remain in the catalog for older Awoo MusicBot
+  versions. Awoo MusicBot 1.1.7 and newer prefer the new `Awoo.Connector.*`
+  executable and `awoo-connector-*` archive names, while existing installations
+  continue to launch without a forced migration.
 
 Runtime packaging and connector protocol compatibility are independent. Set
 `minimumCoreVersion` only when connector behavior truly requires a newer core;

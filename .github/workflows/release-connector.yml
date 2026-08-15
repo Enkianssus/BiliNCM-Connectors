@@ -46,8 +46,10 @@ jobs:
             'folia' { 'Folia' }
           }
           $runtime = if ($id -eq 'netease') { 'win-x64' } else { 'win-x86' }
-          $asset = "bilincm-connector-$id-$version-$runtime.zip"
-          $frameworkAsset = "bilincm-connector-$id-$version-$runtime-framework-dependent.zip"
+          $asset = "awoo-connector-$id-$version-$runtime.zip"
+          $frameworkAsset = "awoo-connector-$id-$version-$runtime-framework-dependent.zip"
+          $legacyAsset = "bilincm-connector-$id-$version-$runtime.zip"
+          $legacyFrameworkAsset = "bilincm-connector-$id-$version-$runtime-framework-dependent.zip"
           $assemblyVersion = $version
           if ($id -eq 'netease') {
             $parts = $version -split '\.'
@@ -63,6 +65,8 @@ jobs:
           "project_name=$projectName" >> $env:GITHUB_OUTPUT
           "asset=$asset" >> $env:GITHUB_OUTPUT
           "framework_asset=$frameworkAsset" >> $env:GITHUB_OUTPUT
+          "legacy_asset=$legacyAsset" >> $env:GITHUB_OUTPUT
+          "legacy_framework_asset=$legacyFrameworkAsset" >> $env:GITHUB_OUTPUT
           "runtime=$runtime" >> $env:GITHUB_OUTPUT
 
       - name: Checkout pinned CEF 4472 headers
@@ -111,6 +115,8 @@ jobs:
           $version = '${{ steps.metadata.outputs.version }}'
           $output = "artifacts/$id/self-contained"
           $frameworkOutput = "artifacts/$id/framework-dependent"
+          $legacyOutput = "artifacts/$id/legacy-self-contained"
+          $legacyFrameworkOutput = "artifacts/$id/legacy-framework-dependent"
 
           dotnet publish `
             "src/$projectName/BiliNCM.Connector.$projectName.csproj" `
@@ -122,7 +128,7 @@ jobs:
             -o "$output"
 
           node scripts/smoke-connector.mjs `
-            "$output/BiliNCM.Connector.$projectName.exe" `
+            "$output/Awoo.Connector.$projectName.exe" `
             "$id"
 
           dotnet publish `
@@ -138,11 +144,26 @@ jobs:
             -p:InformationalVersion="$version" `
             -o "$frameworkOutput"
 
-          $frameworkExecutable = "$frameworkOutput/BiliNCM.Connector.$projectName.exe"
-          $frameworkAssembly = "$frameworkOutput/BiliNCM.Connector.$projectName.dll"
+          $frameworkExecutable = "$frameworkOutput/Awoo.Connector.$projectName.exe"
+          $frameworkAssembly = "$frameworkOutput/Awoo.Connector.$projectName.dll"
           if (-not (Test-Path $frameworkExecutable) -or -not (Test-Path $frameworkAssembly)) {
             throw 'Framework-dependent publish did not contain its apphost and managed entry assembly.'
           }
+
+          New-Item -ItemType Directory -Force $legacyOutput | Out-Null
+          New-Item -ItemType Directory -Force $legacyFrameworkOutput | Out-Null
+          Copy-Item -Recurse -Force "$output/*" $legacyOutput
+          Copy-Item -Recurse -Force "$frameworkOutput/*" $legacyFrameworkOutput
+          Move-Item `
+            "$legacyOutput/Awoo.Connector.$projectName.exe" `
+            "$legacyOutput/BiliNCM.Connector.$projectName.exe"
+          Move-Item `
+            "$legacyFrameworkOutput/Awoo.Connector.$projectName.exe" `
+            "$legacyFrameworkOutput/BiliNCM.Connector.$projectName.exe"
+
+          node scripts/smoke-connector.mjs `
+            "$legacyOutput/BiliNCM.Connector.$projectName.exe" `
+            "$id"
 
           Compress-Archive `
             -Path "$output/*" `
@@ -152,6 +173,16 @@ jobs:
           Compress-Archive `
             -Path "$frameworkOutput/*" `
             -DestinationPath "artifacts/${{ steps.metadata.outputs.framework_asset }}" `
+            -CompressionLevel Optimal
+
+          Compress-Archive `
+            -Path "$legacyOutput/*" `
+            -DestinationPath "artifacts/${{ steps.metadata.outputs.legacy_asset }}" `
+            -CompressionLevel Optimal
+
+          Compress-Archive `
+            -Path "$legacyFrameworkOutput/*" `
+            -DestinationPath "artifacts/${{ steps.metadata.outputs.legacy_framework_asset }}" `
             -CompressionLevel Optimal
 
       - name: Sign release asset
@@ -176,6 +207,22 @@ jobs:
           $frameworkResult.signature | Set-Content -NoNewline "$frameworkAsset.sig"
           $frameworkResult.sha256 | Set-Content -NoNewline "$frameworkAsset.sha256"
 
+          $legacyAsset = "artifacts/${{ steps.metadata.outputs.legacy_asset }}"
+          $legacyResult = node scripts/sign-release.mjs "$legacyAsset" | ConvertFrom-Json
+          "legacy_sha256=$($legacyResult.sha256)" >> $env:GITHUB_OUTPUT
+          "legacy_signature=$($legacyResult.signature)" >> $env:GITHUB_OUTPUT
+          "legacy_size=$($legacyResult.size)" >> $env:GITHUB_OUTPUT
+          $legacyResult.signature | Set-Content -NoNewline "$legacyAsset.sig"
+          $legacyResult.sha256 | Set-Content -NoNewline "$legacyAsset.sha256"
+
+          $legacyFrameworkAsset = "artifacts/${{ steps.metadata.outputs.legacy_framework_asset }}"
+          $legacyFrameworkResult = node scripts/sign-release.mjs "$legacyFrameworkAsset" | ConvertFrom-Json
+          "legacy_framework_sha256=$($legacyFrameworkResult.sha256)" >> $env:GITHUB_OUTPUT
+          "legacy_framework_signature=$($legacyFrameworkResult.signature)" >> $env:GITHUB_OUTPUT
+          "legacy_framework_size=$($legacyFrameworkResult.size)" >> $env:GITHUB_OUTPUT
+          $legacyFrameworkResult.signature | Set-Content -NoNewline "$legacyFrameworkAsset.sig"
+          $legacyFrameworkResult.sha256 | Set-Content -NoNewline "$legacyFrameworkAsset.sha256"
+
       - name: Create GitHub Release
         shell: pwsh
         env:
@@ -183,6 +230,8 @@ jobs:
         run: |
           $asset = "artifacts/${{ steps.metadata.outputs.asset }}"
           $frameworkAsset = "artifacts/${{ steps.metadata.outputs.framework_asset }}"
+          $legacyAsset = "artifacts/${{ steps.metadata.outputs.legacy_asset }}"
+          $legacyFrameworkAsset = "artifacts/${{ steps.metadata.outputs.legacy_framework_asset }}"
           gh release create "${{ github.ref_name }}" `
             "$asset" `
             "$asset.sig" `
@@ -190,8 +239,14 @@ jobs:
             "$frameworkAsset" `
             "$frameworkAsset.sig" `
             "$frameworkAsset.sha256" `
+            "$legacyAsset" `
+            "$legacyAsset.sig" `
+            "$legacyAsset.sha256" `
+            "$legacyFrameworkAsset" `
+            "$legacyFrameworkAsset.sig" `
+            "$legacyFrameworkAsset.sha256" `
             --title "${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}" `
-            --notes "Awoo MusicBot ${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}. Includes a self-contained compatibility package and a smaller framework-dependent package for Awoo MusicBot's private shared .NET runtime."
+            --notes "Awoo MusicBot ${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}. The Awoo-named packages are preferred by 1.1.7 and newer; signed legacy-name aliases keep older Awoo MusicBot versions working."
 
       - name: Update stable catalog
         shell: pwsh
@@ -207,11 +262,19 @@ jobs:
             "${{ steps.signing.outputs.sha256 }}" `
             "${{ steps.signing.outputs.signature }}" `
             "${{ steps.signing.outputs.size }}" `
+            "${{ steps.metadata.outputs.legacy_asset }}" `
+            "${{ steps.signing.outputs.legacy_sha256 }}" `
+            "${{ steps.signing.outputs.legacy_signature }}" `
+            "${{ steps.signing.outputs.legacy_size }}" `
             "${{ steps.metadata.outputs.runtime }}" `
             "${{ steps.metadata.outputs.framework_asset }}" `
             "${{ steps.signing.outputs.framework_sha256 }}" `
             "${{ steps.signing.outputs.framework_signature }}" `
             "${{ steps.signing.outputs.framework_size }}" `
+            "${{ steps.metadata.outputs.legacy_framework_asset }}" `
+            "${{ steps.signing.outputs.legacy_framework_sha256 }}" `
+            "${{ steps.signing.outputs.legacy_framework_signature }}" `
+            "${{ steps.signing.outputs.legacy_framework_size }}" `
             "8.0"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

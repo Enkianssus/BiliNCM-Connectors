@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <AssemblyName>BiliNCM.Connector.Folia</AssemblyName>
+    <AssemblyName>Awoo.Connector.Folia</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
-    <Version>1.1.2</Version>
+    <Version>1.1.3</Version>
     <InformationalVersion>$(Version)</InformationalVersion>
   </PropertyGroup>
 

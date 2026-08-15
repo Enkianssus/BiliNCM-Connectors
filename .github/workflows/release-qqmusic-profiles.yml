@@ -29,9 +29,11 @@ jobs:
             throw "Unsupported release tag: $tag"
           }
           $version = $Matches[1]
-          $asset = "bilincm-qqmusic-profiles-$version.zip"
+          $asset = "awoo-qqmusic-profiles-$version.zip"
+          $legacyAsset = "bilincm-qqmusic-profiles-$version.zip"
           "version=$version" >> $env:GITHUB_OUTPUT
           "asset=$asset" >> $env:GITHUB_OUTPUT
+          "legacy_asset=$legacyAsset" >> $env:GITHUB_OUTPUT
 
       - name: Build profile pack
         shell: pwsh
@@ -42,6 +44,9 @@ jobs:
             -Path artifacts/profiles/* `
             -DestinationPath "artifacts/${{ steps.metadata.outputs.asset }}" `
             -CompressionLevel Optimal
+          Copy-Item `
+            "artifacts/${{ steps.metadata.outputs.asset }}" `
+            "artifacts/${{ steps.metadata.outputs.legacy_asset }}"
 
       - name: Sign profile pack
         id: signing
@@ -57,16 +62,28 @@ jobs:
           $result.signature | Set-Content -NoNewline "$asset.sig"
           $result.sha256 | Set-Content -NoNewline "$asset.sha256"
 
+          $legacyAsset = "artifacts/${{ steps.metadata.outputs.legacy_asset }}"
+          $legacyResult = node scripts/sign-release.mjs "$legacyAsset" | ConvertFrom-Json
+          "legacy_sha256=$($legacyResult.sha256)" >> $env:GITHUB_OUTPUT
+          "legacy_signature=$($legacyResult.signature)" >> $env:GITHUB_OUTPUT
+          "legacy_size=$($legacyResult.size)" >> $env:GITHUB_OUTPUT
+          $legacyResult.signature | Set-Content -NoNewline "$legacyAsset.sig"
+          $legacyResult.sha256 | Set-Content -NoNewline "$legacyAsset.sha256"
+
       - name: Create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $asset = "artifacts/${{ steps.metadata.outputs.asset }}"
+          $legacyAsset = "artifacts/${{ steps.metadata.outputs.legacy_asset }}"
           gh release create "${{ github.ref_name }}" `
             "$asset" `
             "$asset.sig" `
             "$asset.sha256" `
+            "$legacyAsset" `
+            "$legacyAsset.sig" `
+            "$legacyAsset.sha256" `
             --title "QQ Music compatibility profiles v${{ steps.metadata.outputs.version }}" `
             --notes "Signed QQ Music compatibility profiles. No player binaries or user data are included."
 
@@ -80,7 +97,11 @@ jobs:
             "${{ steps.metadata.outputs.asset }}" `
             "${{ steps.signing.outputs.sha256 }}" `
             "${{ steps.signing.outputs.signature }}" `
-            "${{ steps.signing.outputs.size }}"
+            "${{ steps.signing.outputs.size }}" `
+            "${{ steps.metadata.outputs.legacy_asset }}" `
+            "${{ steps.signing.outputs.legacy_sha256 }}" `
+            "${{ steps.signing.outputs.legacy_signature }}" `
+            "${{ steps.signing.outputs.legacy_size }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add qqmusic-profile-catalog.json

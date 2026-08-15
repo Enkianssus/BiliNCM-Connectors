@@ -30,6 +30,7 @@ const OFFICIAL_OVERLAY_ARCHIVE = 'awoo-overlay.zip';
 const RETRO_CMD_OVERLAY_REPO =
   'Enkianssus/AwooMusicBot-Overlay-RetroCMD';
 const RETRO_CMD_OVERLAY_ID = 'us.enkianss.awoo.retro-cmd';
+const SKIN_HUB_URL = 'https://awoo-skins.enkianss.us';
 const GITHUB_HOSTS = new Set([
   'github.com',
   'api.github.com',
@@ -213,7 +214,10 @@ export default {
     );
     if (qqMusicProfileDownload) {
       const [, version, assetName] = qqMusicProfileDownload;
-      if (assetName !== `bilincm-qqmusic-profiles-${version}.zip`) {
+      if (![
+        `awoo-qqmusic-profiles-${version}.zip`,
+        `bilincm-qqmusic-profiles-${version}.zip`
+      ].includes(assetName)) {
         return jsonResponse({ error: 'Invalid profile asset.' }, 400);
       }
       return proxyGitHub(
@@ -236,14 +240,16 @@ export default {
     );
     if (connectorDownload) {
       const [, connectorId, version, assetName] = connectorDownload;
-      const assetPrefix =
-        `bilincm-connector-${connectorId}-${version}-win-x`;
-      const validAsset = [
-        `${assetPrefix}86.zip`,
-        `${assetPrefix}64.zip`,
-        `${assetPrefix}86-framework-dependent.zip`,
-        `${assetPrefix}64-framework-dependent.zip`
-      ].includes(assetName);
+      const validAsset = ['awoo', 'bilincm'].some(brand => {
+        const assetPrefix =
+          `${brand}-connector-${connectorId}-${version}-win-x`;
+        return [
+          `${assetPrefix}86.zip`,
+          `${assetPrefix}64.zip`,
+          `${assetPrefix}86-framework-dependent.zip`,
+          `${assetPrefix}64-framework-dependent.zip`
+        ].includes(assetName);
+      });
       if (!CONNECTOR_IDS.has(connectorId) || !validAsset) {
         return jsonResponse(
           { error: 'Invalid connector asset.' },
@@ -1339,42 +1345,6 @@ function renderHome(host) {
     `)
     .join('');
 
-  const overlayCards = [
-    {
-      name: '嗷呜默认组件',
-      badge: '现代简约',
-      description:
-        '适合 OBS、直播姬浏览器捕捉的透明点歌组件，清晰展示当前歌曲、待播队列与服务状态。',
-      preview: '/mods/v1/official/preview.png',
-      download: '/mods/v1/official/download/awoo-overlay.zip',
-      repository: OFFICIAL_OVERLAY_REPO
-    },
-    {
-      name: '复古 CMD 点歌组件',
-      badge: 'RetroCMD',
-      description:
-        '复古 Windows 命令行窗口风格，保留相同的信息布局，并让唱片封面缓慢旋转。',
-      preview: '/mods/v1/retro-cmd/preview.png',
-      download: '/mods/v1/retro-cmd/download/awoo-overlay.zip',
-      repository: RETRO_CMD_OVERLAY_REPO
-    }
-  ].map(mod => `
-    <article class="mod-card">
-      <a class="preview" href="${mod.preview}" target="_blank" rel="noreferrer">
-        <img src="${mod.preview}" alt="${escapeHtml(mod.name)}预览图" loading="lazy">
-      </a>
-      <div class="mod-body">
-        <span class="badge">${escapeHtml(mod.badge)}</span>
-        <h3>${escapeHtml(mod.name)}</h3>
-        <p>${escapeHtml(mod.description)}</p>
-        <div class="actions">
-          <a class="primary" href="${mod.download}">本站下载 ZIP</a>
-          <a href="https://github.com/${mod.repository}">源码与说明</a>
-        </div>
-      </div>
-    </article>
-  `).join('');
-
   return `<!doctype html>
   <html lang="zh-CN">
   <head>
@@ -1389,9 +1359,9 @@ function renderHome(host) {
       h2{font-size:18px;color:#fff}h3{font-size:18px;color:#fff;margin:10px 0 8px}p{line-height:1.7;color:var(--muted)}.actions{display:flex;gap:12px;flex-wrap:wrap}.badge{display:inline-block;padding:4px 9px;border-radius:999px;background:#21262d;border:1px solid var(--border);color:#8b949e;font-size:12px;font-weight:700}.badge.featured{background:#23863633;border-color:#3fb95066;color:#56d364}
       a{color:var(--text);text-decoration:none;background:#21262d;border:1px solid var(--border);border-radius:8px;padding:11px 18px;font-weight:650}
       a.primary{background:var(--green);color:#fff}.endpoint{font-family:ui-monospace,Consolas,monospace;background:#010409;border:1px solid var(--border);padding:12px;border-radius:8px;overflow:auto}
-      .section-intro{margin-top:-4px}.mod-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:18px}.mod-card{overflow:hidden;border:1px solid var(--border);border-radius:14px;background:#0d1117}.preview{display:flex;width:100%;aspect-ratio:16/7;align-items:center;justify-content:center;padding:0;border:0;border-radius:0;background:linear-gradient(135deg,#f5f5f5,#d8d8d8)}.preview img{display:block;width:100%;height:100%;object-fit:contain}.mod-body{padding:20px}.mod-body p{min-height:76px;margin:0 0 16px}.install-guide{margin-top:20px;padding:20px;border:1px solid #388bfd55;border-radius:12px;background:#1f6feb12}.install-guide h3{margin-top:0}.install-guide ol{margin:8px 0 0;padding-left:22px;color:var(--muted);line-height:1.9}.install-guide strong{color:var(--text)}
+      .section-intro{margin-top:-4px}.skin-hub{margin-top:18px;padding:24px;border:1px solid #388bfd55;border-radius:14px;background:linear-gradient(135deg,#1f6feb1a,#23863614)}.skin-hub h3{margin:0 0 8px;color:#fff}.skin-hub p{margin:0 0 18px}.skin-hub .actions{margin-top:0}
       footer{margin-top:30px;color:#484f58;font-size:12px;text-align:center}
-      @media(max-width:760px){main{margin:20px auto}.panel{padding:20px}.mod-grid{grid-template-columns:1fr}.mod-body p{min-height:0}}
+      @media(max-width:760px){main{margin:20px auto}.panel{padding:20px}}
     </style>
   </head>
   <body>
@@ -1400,16 +1370,14 @@ function renderHome(host) {
       <div class="status">● Cloudflare 分发节点运行中</div>
       ${cards}
       <section class="card">
-        <h2>嗷呜点歌机 Mod UI</h2>
-        <p class="section-intro">为 OBS 或直播姬浏览器捕捉准备的只读展示组件。下载后可以在点歌机中安装、切换，OBS 地址仍然保持不变。</p>
-        <div class="mod-grid">${overlayCards}</div>
-        <div class="install-guide">
-          <h3>如何安装</h3>
-          <ol>
-            <li>下载喜欢的 <strong>Mod UI ZIP</strong>，无需解压。</li>
-            <li>打开点歌机控制面板的 <strong>运行状态 → Mod UI</strong>。</li>
-            <li>点击添加并选择 ZIP，或把 ZIP 直接拖入安装区域；安装完成后会自动启用，也可随时切换。</li>
-          </ol>
+        <h2>嗷呜 Mod UI 皮肤站</h2>
+        <p class="section-intro">在皮肤站浏览社区作品、查看预览并下载 Mod UI。登录后还可以用 B 站账号发布自己的皮肤。</p>
+        <div class="skin-hub">
+          <h3>Awoo Skin Hub · 嗷呜皮肤站</h3>
+          <p>集中展示和分发 Mod UI 皮肤，支持预览、下载与一键安装。</p>
+          <div class="actions">
+            <a class="primary" href="${SKIN_HUB_URL}" target="_blank" rel="noreferrer">打开皮肤站</a>
+          </div>
         </div>
       </section>
       <section class="card">
@@ -1435,7 +1403,7 @@ function renderFeedback() {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>问题反馈 · Enkianssus App Hub</title><style>
 :root{color-scheme:dark;--bg:#0d1117;--card:#161b22;--line:#30363d;--text:#e6edf3;--muted:#8b949e}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,"Segoe UI",sans-serif}main{width:min(820px,calc(100% - 28px));margin:32px auto}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px;margin-bottom:16px}h1,h2{margin:0 0 8px}p{color:var(--muted)}label{display:block;font-weight:650;margin:16px 0 6px}input,select,textarea{width:100%;background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:11px;font:inherit}textarea{min-height:160px;resize:vertical}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.actions{display:flex;gap:12px;margin-top:20px;flex-wrap:wrap}button,a.btn{border:0;border-radius:9px;padding:11px 18px;font-weight:700;cursor:pointer;text-decoration:none;background:#21262d;color:var(--text)}button.primary{background:#1f6feb;color:#fff}button:disabled{opacity:.55}.message{padding:13px;border-radius:9px;margin-top:16px;white-space:pre-wrap}.ok{background:#23863633;border:1px solid #3fb95066}.err{background:#da363333;border:1px solid #f8514966}.hidden{display:none}@media(max-width:640px){.grid{grid-template-columns:1fr}.card{padding:18px}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,"Segoe UI",sans-serif}main{width:min(820px,calc(100% - 28px));margin:32px auto}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px;margin-bottom:16px}h1,h2{margin:0 0 8px}p{color:var(--muted)}label{display:block;font-weight:650;margin:16px 0 6px}input,select,textarea{width:100%;background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:11px;font:inherit}textarea{min-height:160px;resize:vertical}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.lookup-row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:end}.lookup-row button{min-width:96px}.actions{display:flex;gap:12px;margin-top:20px;flex-wrap:wrap}button,a.btn{border:0;border-radius:9px;padding:11px 18px;font-weight:700;cursor:pointer;text-decoration:none;background:#21262d;color:var(--text)}button.primary{background:#1f6feb;color:#fff}button:disabled{opacity:.55}.message{padding:13px;border-radius:9px;margin-top:16px;white-space:pre-wrap}.ok{background:#23863633;border:1px solid #3fb95066}.err{background:#da363333;border:1px solid #f8514966}.hidden{display:none}@media(max-width:640px){.grid,.lookup-row{grid-template-columns:1fr}.card{padding:18px}}
 </style></head><body><main>
 <section class="card"><h1>问题反馈与兼容性报告</h1><p>可提交播放器连接、连接器兼容、点歌流程或功能建议。点歌机内提交时会在你确认后附带版本诊断，不会上传登录 Cookie、二维码凭据或用户白名单。</p></section>
 <section class="card"><form id="feedbackForm">
@@ -1446,13 +1414,19 @@ function renderFeedback() {
 <label>联系方式（可选）</label><input name="contact" maxlength="200" placeholder="邮箱、GitHub 或其他联系方式">
 <div class="actions"><button class="primary" id="submitButton" type="submit">提交反馈</button><a class="btn" href="/">返回下载页</a></div></form>
 <div id="message" class="message hidden"></div></section>
-<section class="card hidden" id="trackingCard"><h2>查询反馈</h2><p id="trackingText"></p></section>
+<section class="card" id="trackingCard"><h2>查询反馈进度</h2><p>输入提交成功后获得的问题编号，查看处理状态和公开回复。</p>
+<form id="trackingForm" class="lookup-row"><div><label for="trackingId">问题编号</label><input id="trackingId" name="id" maxlength="40" autocomplete="off" spellcheck="false" placeholder="例如 FB-20260809-XXXXXXXX"></div><button class="primary" id="trackingButton" type="submit">查询</button></form>
+<div id="trackingText" class="message hidden" aria-live="polite"></div></section>
 </main><script>
-const form=document.getElementById('feedbackForm'),message=document.getElementById('message'),button=document.getElementById('submitButton');
+const form=document.getElementById('feedbackForm'),message=document.getElementById('message'),button=document.getElementById('submitButton'),trackingForm=document.getElementById('trackingForm'),trackingInput=document.getElementById('trackingId'),trackingButton=document.getElementById('trackingButton'),trackingText=document.getElementById('trackingText');
 function show(text,ok){message.textContent=text;message.className='message '+(ok?'ok':'err')}
+const statusLabels={open:'已收到',triaging:'正在确认',working:'处理中',resolved:'已解决',closed:'已关闭',duplicate:'重复问题'};
+function normalizeTrackingId(value){const id=String(value||'').trim().toUpperCase();return /^[A-Z0-9][A-Z0-9-]{7,39}$/.test(id)?id:''}
+function showTracking(text,ok){trackingText.textContent=text;trackingText.className='message '+(ok?'ok':'err')}
 form.addEventListener('submit',async event=>{event.preventDefault();button.disabled=true;button.textContent='提交中…';try{const data=Object.fromEntries(new FormData(form));data.source='web';const response=await fetch('/api/v1/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await response.json();if(!response.ok)throw new Error(result.error||'提交失败');show('提交成功。反馈编号：'+result.id+'\\n请保存这个编号。',true);history.replaceState(null,'','/feedback?id='+encodeURIComponent(result.id));loadTracking(result.id)}catch(error){show(error.message||String(error),false)}finally{button.disabled=false;button.textContent='提交反馈'}});
-async function loadTracking(id){if(!id)return;const card=document.getElementById('trackingCard'),text=document.getElementById('trackingText');card.classList.remove('hidden');text.textContent='正在查询 '+id+'…';try{const response=await fetch('/api/v1/feedback/'+encodeURIComponent(id));const result=await response.json();if(!response.ok)throw new Error(result.error||'查询失败');text.textContent='编号：'+result.id+'\\n状态：'+result.status+'\\n标题：'+result.title+(result.reply?'\\n处理回复：'+result.reply:'')}catch(error){text.textContent=error.message||String(error)}}
-loadTracking(new URLSearchParams(location.search).get('id'));
+async function loadTracking(value){const id=normalizeTrackingId(value);if(!id){showTracking('请输入正确的问题编号。',false);return}trackingInput.value=id;history.replaceState(null,'','/feedback?id='+encodeURIComponent(id));trackingButton.disabled=true;trackingButton.textContent='查询中…';trackingText.textContent='正在查询 '+id+'…';trackingText.className='message';try{const response=await fetch('/api/v1/feedback/'+encodeURIComponent(id),{cache:'no-store'});const result=await response.json();if(!response.ok)throw new Error(result.error||'查询失败');showTracking('编号：'+result.id+'\\n状态：'+(statusLabels[result.status]||result.status)+'\\n标题：'+result.title+'\\n处理回复：'+(result.reply||'暂时还没有公开回复。'),true)}catch(error){showTracking(error.message||String(error),false)}finally{trackingButton.disabled=false;trackingButton.textContent='查询'}}
+trackingForm.addEventListener('submit',event=>{event.preventDefault();loadTracking(trackingInput.value)});
+const initialTrackingId=new URLSearchParams(location.search).get('id');if(initialTrackingId){trackingInput.value=initialTrackingId;loadTracking(initialTrackingId)}
 </script></body></html>`;
 }
 

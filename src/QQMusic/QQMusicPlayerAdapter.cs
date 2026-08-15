@@ -48,7 +48,7 @@ internal sealed class QQMusicPlayerAdapter :
 
     public string DisplayName => "QQ 音乐";
 
-    public string TestedVersion => "22.22 / 22.41";
+    public string TestedVersion => "22.22 / 22.41 / 22.51";
 
     public bool AllowUnsafeNativeNext { get; set; }
 
@@ -667,7 +667,8 @@ internal sealed class QQMusicPlayerAdapter :
                 + "没有回退到会重建队列的 /playbysongid。"
                 + $" 验证={native.Verification}；"
                 + (native.Error ?? "底层校验未通过。"),
-                await ProbeAsync(cancellationToken).ConfigureAwait(false));
+                await ProbeAsync(cancellationToken).ConfigureAwait(false),
+                native.FailureCode);
         }
 
         var foregroundBefore = GetForegroundWindow();
@@ -794,7 +795,8 @@ internal sealed class QQMusicPlayerAdapter :
                 : $"QQ 原生下一首被拒绝：{result.Verification}；"
                   + (result.Error ?? "底层校验未通过。")
                   + " 未回退到会重建队列的播放命令。",
-            after);
+            after,
+            result.FailureCode);
     }
 
     private static bool IsNativeInsertAccepted(
@@ -1662,6 +1664,7 @@ internal sealed class QQMusicPlayerAdapter :
                         false,
                         false,
                         "PendingNativeNextAlreadyInserted",
+                        null,
                         null);
                 }
                 insertedAtSequence = _observedTrackSequence;
@@ -1716,7 +1719,8 @@ internal sealed class QQMusicPlayerAdapter :
                     : sideEffectPossible
                     ? "NativeAddSongsMayHaveCompleted;DuplicateRetrySuppressed"
                     : result.Verification,
-                result.Error);
+                result.Error,
+                result.FailureCode);
         }
         finally
         {
@@ -2002,7 +2006,8 @@ internal sealed class QQMusicPlayerAdapter :
         bool InsertedNow,
         bool Indeterminate,
         string Verification,
-        string? Error);
+        string? Error,
+        string? FailureCode);
 
     private sealed record SingleInstanceSendResult(
         bool Sent,

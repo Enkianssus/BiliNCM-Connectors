@@ -31,7 +31,8 @@ internal sealed record QQMusicNativeNextResult(
     string Verification,
     long ElapsedMilliseconds,
     string Transport,
-    string? Error);
+    string? Error,
+    string? FailureCode);
 
 /// <summary>
 /// Executes the same AddSongs(mode=0) operation as a calibrated QQ Music
@@ -49,6 +50,8 @@ internal sealed record QQMusicNativeNextResult(
 /// </summary>
 internal static class QQMusicNativeNextTransport
 {
+    private const string ProcessAccessDeniedFailureCode =
+        "process-access-denied";
     private const int DataOffset = 0x300;
     private const int DataSize = 0x100;
     private const int VectorOffset = 0xB8;
@@ -123,6 +126,7 @@ internal static class QQMusicNativeNextTransport
         var hiddenCategoryId = 0;
         var hiddenCategoryCount = 0;
         string? error = null;
+        string? failureCode = null;
         TargetModules? target = null;
         QQMusicNativeNextProfile? profile = null;
         SafeProcessHandle? processHandle = null;
@@ -346,6 +350,7 @@ internal static class QQMusicNativeNextTransport
         catch (Exception exception)
         {
             error = $"{exception.GetType().Name}: {exception.Message}";
+            failureCode = ClassifyFailure(exception);
         }
         finally
         {
@@ -375,6 +380,7 @@ internal static class QQMusicNativeNextTransport
                 }
                 catch (Exception restoreException)
                 {
+                    failureCode ??= ClassifyFailure(restoreException);
                     AppendError(
                         ref error,
                         "恢复单曲播放分发指令失败："
@@ -404,14 +410,17 @@ internal static class QQMusicNativeNextTransport
                         MemRelease);
                     if (!remoteMemoryReleased)
                     {
+                        var releaseException = CreateWin32Exception(
+                            "VirtualFreeEx");
+                        failureCode ??= ClassifyFailure(releaseException);
                         AppendError(
                             ref error,
-                            CreateWin32Exception(
-                                "VirtualFreeEx").Message);
+                            releaseException.Message);
                     }
                 }
                 catch (Exception releaseException)
                 {
+                    failureCode ??= ClassifyFailure(releaseException);
                     AppendError(
                         ref error,
                         "释放 UI 跳板内存失败："
@@ -483,7 +492,8 @@ internal static class QQMusicNativeNextTransport
                 + "validated UI callback trampoline "
                 + "-> GetSongInfo(last resolved item) "
                 + "-> AddSongs(mode=0)",
-            error);
+            error,
+            failureCode);
     }
 
     private static byte[] BuildUiTrampoline(
@@ -936,14 +946,20 @@ internal static class QQMusicNativeNextTransport
     {
         var errorCode = Marshal.GetLastWin32Error();
         var nativeMessage = new Win32Exception(errorCode).Message;
-        var elevationHint = errorCode == 5
-            ? "；请以管理员身份运行此测试 POC"
+        var accessHint = errorCode == 5
+            ? "；目标进程拒绝访问，请确认点歌机与 QQ 音乐使用相同权限级别，"
+              + "并检查安全软件的拦截记录"
             : string.Empty;
         return new Win32Exception(
             errorCode,
             $"{operation} 失败：{nativeMessage} "
-            + $"(Win32={errorCode}){elevationHint}");
+            + $"(Win32={errorCode}){accessHint}");
     }
+
+    private static string? ClassifyFailure(Exception exception) =>
+        exception is Win32Exception { NativeErrorCode: 5 }
+            ? ProcessAccessDeniedFailureCode
+            : null;
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern SafeProcessHandle OpenProcess(

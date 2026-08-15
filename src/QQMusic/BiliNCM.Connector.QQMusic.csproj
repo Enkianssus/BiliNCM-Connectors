@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <AssemblyName>BiliNCM.Connector.QQMusic</AssemblyName>
+    <AssemblyName>Awoo.Connector.QQMusic</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
-    <Version>22.51.1</Version>
+    <Version>22.51.2</Version>
     <InformationalVersion>$(Version)</InformationalVersion>
   </PropertyGroup>
 

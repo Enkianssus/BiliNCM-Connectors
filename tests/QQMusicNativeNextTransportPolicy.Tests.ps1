@@ -36,8 +36,8 @@ foreach ($entry in $expectedProfile.GetEnumerator()) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.51.1') {
-    throw 'QQ Music connector version must be 22.51.1 for this compatibility update.'
+if ([string]$project.Project.PropertyGroup.Version -ne '22.51.2') {
+    throw 'QQ Music connector version must be 22.51.2 for this compatibility update.'
 }
 
 Write-Output 'QQMusicNativeNextTransportPolicy.Tests passed.'

@@ -61,7 +61,8 @@ internal sealed record PlayerSnapshot(
 internal sealed record PlayerOperationResult(
     OperationOutcome Outcome,
     string Message,
-    PlayerSnapshot? Snapshot = null)
+    PlayerSnapshot? Snapshot = null,
+    string? FailureCode = null)
 {
     public bool IsSuccess =>
         Outcome is OperationOutcome.Accepted
