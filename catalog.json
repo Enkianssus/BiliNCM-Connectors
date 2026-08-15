@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-08T12:25:18.659Z",
+  "generatedAt": "2026-08-15T13:09:34.647Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -8,26 +8,42 @@
       "id": "netease",
       "name": "网易云音乐",
       "channel": "stable",
-      "version": "3.1.37.205354.8",
+      "version": "3.1.37.205354.9",
       "protocolVersion": 1,
       "minimumCoreVersion": "1.1.0",
       "playerVersionPolicy": "3.1.*",
       "testedPlayerVersion": "3.1.37.205354",
       "runtime": "win-x64",
-      "asset": "bilincm-connector-netease-3.1.37.205354.8-win-x64.zip",
-      "size": 37391320,
-      "sha256": "9c6e767f13405e4d7ea704bfbf46063d1d8ac53fb1b7b2565923d573ce496eef",
-      "signature": "FB37milburIBllTskOaUIAtBOu59uU3v2Y8hv+ar240b7TLZMAN7AIKE7P3q+ooDA1svrI9dm6w2GUszcPjfBA==",
-      "publishedAt": "2026-08-03T14:27:31.519Z",
-      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.8/bilincm-connector-netease-3.1.37.205354.8-win-x64.zip",
+      "asset": "bilincm-connector-netease-3.1.37.205354.9-win-x64.zip",
+      "size": 37391430,
+      "sha256": "4eb9ae5067d276d9323bc1616134299f1b8452fae87989e1fb6394991e696587",
+      "signature": "kXLqNRxOAZeAN/VWs7BHa+81bnv56q/ypJV2FiF5lj2s06HfyrhkYS65NoQSkxKumS6YmQE8Pr7HdBcuiSbCCw==",
+      "publishedAt": "2026-08-15T13:09:34.647Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.9/bilincm-connector-netease-3.1.37.205354.9-win-x64.zip",
+      "awooPackage": {
+        "asset": "awoo-connector-netease-3.1.37.205354.9-win-x64.zip",
+        "size": 37391424,
+        "sha256": "93963a93a165faa1a6c8fe59fe66ff0a3b7d4c4633e55e0b96327e7394a5ec94",
+        "signature": "eJNmvOX7wTmNnb8kdcHIFVs3OADxqRbwgwomrkpsg5FSQTfIMMIMA++aiNAFw1DKCgG0S+wxyUPETu2fzcm9CA==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.9/awoo-connector-netease-3.1.37.205354.9-win-x64.zip"
+      },
       "frameworkDependent": {
         "runtime": "win-x64",
         "runtimeChannel": "8.0",
-        "asset": "bilincm-connector-netease-3.1.37.205354.8-win-x64-framework-dependent.zip",
-        "size": 6890057,
-        "sha256": "28053de164c4b043d8e675b93f3640a28658f5b4c1262bf22cca4e3f7248d7af",
-        "signature": "2Uu55ociD1dmwD3ttEVY/18yuwhUQfbynjoN8QVNJl8nsJD95jGCWiBeQTYWDkPsc68NjMV33Vs40ChakGzOBw==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.8/bilincm-connector-netease-3.1.37.205354.8-win-x64-framework-dependent.zip"
+        "asset": "bilincm-connector-netease-3.1.37.205354.9-win-x64-framework-dependent.zip",
+        "size": 6890102,
+        "sha256": "bdbe1a0b4f3bd03c5be534f8f7353172d9f2219099a199639dbe786214d5b31f",
+        "signature": "Tg1O8V4UEWFTndseHbRJcSKxeO7H3iuqVRIv2y9tgNg5J4CMEEgjiFQrSIe29turXqOlm/qIoUUaOFSR+gZvBg==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.9/bilincm-connector-netease-3.1.37.205354.9-win-x64-framework-dependent.zip"
+      },
+      "awooFrameworkDependent": {
+        "runtime": "win-x64",
+        "runtimeChannel": "8.0",
+        "asset": "awoo-connector-netease-3.1.37.205354.9-win-x64-framework-dependent.zip",
+        "size": 6890096,
+        "sha256": "eb8df0629b52be39ddbb5dace3420d8e93a6d19cf5b77bd51dd7ec12211b0890",
+        "signature": "eNtCUIR7wKEYcK0bWnQ0QTzcGOJvn8B1rizat2FrJI7t/C7i6sD2NbyIs8jwj5LDNMi2nQ+UzDoNDGAQ1JdFDw==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/netease/3.1.37.205354.9/awoo-connector-netease-3.1.37.205354.9-win-x64-framework-dependent.zip"
       }
     },
     "kugou": {
