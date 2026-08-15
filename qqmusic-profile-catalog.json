@@ -1,20 +1,27 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-08T12:26:55.035Z",
+  "generatedAt": "2026-08-15T13:09:59.616Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "profiles": {
     "qqmusic": {
       "id": "qqmusic",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "schemaVersion": 1,
       "minimumConnectorVersion": "22.51.1",
-      "asset": "bilincm-qqmusic-profiles-1.1.0.zip",
+      "asset": "bilincm-qqmusic-profiles-1.1.1.zip",
       "size": 1684,
-      "sha256": "b8a66daa40221d144dd3e70c82210c758b247ed3a515d78f6bbbcdfd9083e61e",
-      "signature": "dR2A0a8t1RJso0WbZgbpTNljAm8UhrGkucHre6ianwFazFvYI6ueDRPiBjKc+8LWUmipjEK5LX2blBQng784CA==",
-      "publishedAt": "2026-08-08T12:26:55.035Z",
-      "downloadUrl": "https://app.enkianss.us/connectors/v1/profiles/qqmusic/download/1.1.0/bilincm-qqmusic-profiles-1.1.0.zip"
+      "sha256": "3207a368c1c8f162f16b1ef92aef174a984bb695c8cf8aa2fb8b579c7f5f79d8",
+      "signature": "8DYMUqoqHGAWxLB3GF0GtAJ1IjlEK/FiVGNwcbIxBBumHR3BArTsIhXR+i2zvbpR0FVGcFW7vNQPjVuWXTiFDw==",
+      "publishedAt": "2026-08-15T13:09:59.616Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/profiles/qqmusic/download/1.1.1/bilincm-qqmusic-profiles-1.1.1.zip",
+      "awooPackage": {
+        "asset": "awoo-qqmusic-profiles-1.1.1.zip",
+        "size": 1684,
+        "sha256": "3207a368c1c8f162f16b1ef92aef174a984bb695c8cf8aa2fb8b579c7f5f79d8",
+        "signature": "8DYMUqoqHGAWxLB3GF0GtAJ1IjlEK/FiVGNwcbIxBBumHR3BArTsIhXR+i2zvbpR0FVGcFW7vNQPjVuWXTiFDw==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/profiles/qqmusic/download/1.1.1/awoo-qqmusic-profiles-1.1.1.zip"
+      }
     }
   }
 }
