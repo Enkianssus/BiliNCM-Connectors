@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "fileVersion": "22.52",
+  "clientSha256": "A06046FD1D36BCEA03CE1A014209F143537B37471CF53CB010E087D080C14DDD",
+  "commonSha256": "F57AB179585F455C031DE9891E2A79131BFC965DD5D64BA94143DD90894ABD7D",
+  "singleSongPlayDispatchRva": "0x0049C6B4",
+  "expectedPlayDispatchBytes": "E8 77 66 16 00",
+  "getCatManagerRva": "0x0000F0ED",
+  "getQqUinExRva": "0x0002E089",
+  "songItemConstructorRva": "0x0004B8D0",
+  "songItemDestructorRva": "0x0004B410",
+  "addSongsRva": "0x0044E220",
+  "hiddenCategoryIdRva": "0x00C48340",
+  "getListRootRva": "0x006259C0",
+  "getListHelperRva": "0x00625B20",
+  "getCategoryCountRva": "0x004FE0F0",
+  "songItemSize": "0xA0",
+  "evidence": "2026-08-16 normalized binary mapping from hash-locked QQMusic 22.51 plus live AddSongs(mode=0) insertion and Next validation on QQMusic 22.52"
+}
