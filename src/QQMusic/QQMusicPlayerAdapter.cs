@@ -1479,13 +1479,26 @@ internal sealed class QQMusicPlayerAdapter :
                 return resolved;
             }
 
-            var matches = _knownTracks.Values
+            var exactMatches = _knownTracks.Values
                 .Where(track =>
                     Normalize(track.Title) == Normalize(title)
                     && (string.IsNullOrWhiteSpace(artist)
                         || Normalize(track.Artist) == Normalize(artist)))
                 .ToArray();
-            return matches.Length == 1 ? matches[0] : null;
+            if (exactMatches.Length == 1)
+            {
+                return exactMatches[0];
+            }
+
+            var aliasMatches = _knownTracks.Values
+                .Where(track => QQMusicTrackMatchPolicy
+                    .MetadataRepresentsSameSong(
+                        track.Title,
+                        track.Artist,
+                        title,
+                        artist))
+                .ToArray();
+            return aliasMatches.Length == 1 ? aliasMatches[0] : null;
         }
     }
 
@@ -1914,12 +1927,13 @@ internal sealed class QQMusicPlayerAdapter :
     private static bool TrackMatches(PlayerTrack? actual, PlayerTrack expected)
     {
         return actual is not null
-            && (actual.Id == expected.Id
-                && !string.IsNullOrWhiteSpace(actual.Id)
-                || (Normalize(actual.Title) == Normalize(expected.Title)
-                    && (string.IsNullOrWhiteSpace(expected.Artist)
-                        || Normalize(actual.Artist)
-                        == Normalize(expected.Artist))));
+            && QQMusicTrackMatchPolicy.TracksRepresentSameSong(
+                actual.Id,
+                actual.Title,
+                actual.Artist,
+                expected.Id,
+                expected.Title,
+                expected.Artist);
     }
 
     private static bool CurrentMetadataRepresentsSameSong(
@@ -1928,7 +1942,7 @@ internal sealed class QQMusicPlayerAdapter :
     {
         return windowTrack is not null
             && mediaTrack is not null
-            && QQMusicWindowTitleParser.MetadataRepresentsSameSong(
+            && QQMusicTrackMatchPolicy.MetadataRepresentsSameSong(
                 windowTrack.Title,
                 windowTrack.Artist,
                 mediaTrack.Title,

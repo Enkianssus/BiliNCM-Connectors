@@ -14,5 +14,7 @@
              Link="QQMusicAlbumArtwork.cs" />
     <Compile Include="..\..\src\QQMusic\QQMusicWindowTitleParser.cs"
              Link="QQMusicWindowTitleParser.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicTrackMatchPolicy.cs"
+             Link="QQMusicTrackMatchPolicy.cs" />
   </ItemGroup>
 </Project>

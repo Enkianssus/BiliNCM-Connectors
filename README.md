@@ -40,6 +40,12 @@ instead of reading the window title every 2 ms. Near a natural track ending it
 uses the latest media timeline to arm one pre-mute timer for 450 ms before the
 estimated end; timeline and playback events cancel and reschedule that timer.
 
+QQ Music connector 22.51.3 also treats the explicit instrumental suffixes
+`(纯音乐)`, `(Inst.)`, and `(Instrumental)` as aliases only when the base title
+and artist both match. Live, Remix, and unrelated versions remain distinct, so
+the guarded-next verifier can accept QQ's alternate instrumental label without
+weakening stable song-ID matching.
+
 Unknown QQ Music builds are rejected safely. The connector can submit an
 anonymous compatibility report containing only the player/connector versions,
 DLL SHA-256 values and analyzer results. It never uploads QQ Music binaries,

@@ -1,4 +1,5 @@
 using QQMusicControlPoc;
+using UnifiedPlayerControlPoc;
 
 static void AssertTrack(
     string input,
@@ -96,6 +97,45 @@ if (pictureFallback != "0046VnUP3it5w8"
 {
     throw new InvalidOperationException(
         "Album artwork fallback checks failed.");
+}
+
+if (!QQMusicTrackMatchPolicy.MetadataRepresentsSameSong(
+        "September (纯音乐)",
+        "Sparky Deathcap",
+        "September (Inst.)",
+        "Sparky Deathcap")
+    || QQMusicTrackMatchPolicy.MetadataRepresentsSameSong(
+        "September (Instrumental)",
+        "Sparky Deathcap",
+        "September",
+        "Sparky Deathcap")
+    || QQMusicTrackMatchPolicy.MetadataRepresentsSameSong(
+        "September (纯音乐)",
+        "Sparky Deathcap",
+        "September (Live)",
+        "Sparky Deathcap")
+    || QQMusicTrackMatchPolicy.MetadataRepresentsSameSong(
+        "September (纯音乐)",
+        "Sparky Deathcap",
+        "September (Inst.)",
+        "Other Artist")
+    || !QQMusicTrackMatchPolicy.TracksRepresentSameSong(
+        "395562465",
+        "September (Inst.)",
+        "Sparky Deathcap",
+        "395562465",
+        "September (Live)",
+        "Other Artist")
+    || QQMusicTrackMatchPolicy.TracksRepresentSameSong(
+        "111",
+        "September (Inst.)",
+        "Sparky Deathcap",
+        "222",
+        "September (纯音乐)",
+        "Sparky Deathcap"))
+{
+    throw new InvalidOperationException(
+        "QQ instrumental alias matching checks failed.");
 }
 
 Console.WriteLine("QQ Music metadata policy tests passed.");
