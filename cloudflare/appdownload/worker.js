@@ -263,7 +263,8 @@ export default {
           + `${connectorId}-v${version}/${assetName}`,
         {
           downloadName: assetName,
-          cacheControl: 'public, max-age=31536000, immutable'
+          cacheControl: 'public, max-age=31536000, immutable',
+          cacheRevision: '2'
         }
       );
     }
@@ -945,6 +946,13 @@ async function proxyGitHub(request, target, options = {}) {
 
   if (!isAllowedGitHubHost(targetUrl.hostname)) {
     return jsonResponse({ error: 'Access denied.' }, 403);
+  }
+
+  if (options.cacheRevision) {
+    targetUrl.searchParams.set(
+      'awoo_proxy_cache',
+      String(options.cacheRevision)
+    );
   }
 
   const headers = new Headers({
