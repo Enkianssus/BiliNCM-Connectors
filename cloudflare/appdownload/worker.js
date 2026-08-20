@@ -975,7 +975,10 @@ async function proxyGitHub(request, target, options = {}) {
       cf: options.cacheControl
         ? {
             cacheEverything: true,
-            cacheTtl: options.cacheTtl || 31536000
+            cacheTtlByStatus: {
+              '200-299': options.cacheTtl || 31536000,
+              '400-599': 0
+            }
           }
         : undefined
     });
@@ -1098,8 +1101,10 @@ function copyProxyResponse(response, options = {}) {
   if (options.contentType) {
     headers.set('Content-Type', options.contentType);
   }
-  if (options.cacheControl) {
+  if (options.cacheControl && response.ok) {
     headers.set('Cache-Control', options.cacheControl);
+  } else if (!response.ok) {
+    headers.set('Cache-Control', 'no-store');
   }
 
   return new Response(response.body, {
