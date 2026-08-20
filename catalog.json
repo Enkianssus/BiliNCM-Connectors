@@ -103,13 +103,13 @@
       "sha256": "07062bd0840dbf44b319fde362f9de9652fdf697c9264e373319636878ab1784",
       "signature": "bZ65+0EKZ2PYOHZhOY7Fcr3pY7qP9mDrrns5XDfl5fDa9Kod+sxI3TW/4S73sDEGAOIbIJR9/I28LCeBy8OgBA==",
       "publishedAt": "2026-08-20T14:11:14.182Z",
-      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/bilincm-connector-qqmusic-22.51.3-win-x86.zip",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/bilincm-connector-qqmusic-22.51.3-win-x86.zip?cache=2",
       "awooPackage": {
         "asset": "awoo-connector-qqmusic-22.51.3-win-x86.zip",
         "size": 34712959,
         "sha256": "0492ba04c725b72c6feec7cb039f88a06349c6789445789a8c34849e8f9813ed",
         "signature": "i34t1UlV/CwY3YKnA8P6p5MvVSpxoCSijT3797XTZvOuvj3+QgXhu3ForhEKyjG/wAY63uu3ZM2GYAR7BsNRCQ==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/awoo-connector-qqmusic-22.51.3-win-x86.zip"
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/awoo-connector-qqmusic-22.51.3-win-x86.zip?cache=2"
       },
       "frameworkDependent": {
         "runtime": "win-x86",
@@ -118,7 +118,7 @@
         "size": 6784914,
         "sha256": "6eaa0ec86e19883af708a0c550f8137b110554d55362bec799e0ce4604981fb3",
         "signature": "HheIvI7cbe9d5xfOdtaWjyWV0H3wgvDmYItNYzea9hXngxyyLnJwSyvCUjDKkXTVuwgo6nt0ZWqUAW+b0MGXCQ==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/bilincm-connector-qqmusic-22.51.3-win-x86-framework-dependent.zip"
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/bilincm-connector-qqmusic-22.51.3-win-x86-framework-dependent.zip?cache=2"
       },
       "awooFrameworkDependent": {
         "runtime": "win-x86",
@@ -127,7 +127,7 @@
         "size": 6784908,
         "sha256": "13688d51fa80d53c3d2e1afbe37282f07d99829225511fa4fee1621611d92ae1",
         "signature": "oVl3kYLYeeDiH8lwttIS/FR/qiSd5XYBQB6Lv2bD9TCTBw3EBY/UOVOr3pfSY9HrxRRuNoj16zbbA1IdlkMADA==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/awoo-connector-qqmusic-22.51.3-win-x86-framework-dependent.zip"
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/awoo-connector-qqmusic-22.51.3-win-x86-framework-dependent.zip?cache=2"
       }
     },
     "folia": {

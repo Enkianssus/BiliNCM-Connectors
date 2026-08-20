@@ -1351,7 +1351,7 @@ function renderHome(host) {
         <h2>${escapeHtml(project.name)}</h2>
         <p>${escapeHtml(project.description)}</p>
         <div class="actions">
-          <a class="primary" href="/download/${id}">本站下载</a>
+          <a class="primary" href="/download/${id}?cache=2">本站下载</a>
           <a href="https://github.com/${project.repo}">GitHub</a>
         </div>
       </section>
