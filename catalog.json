@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-20T14:11:14.182Z",
+  "generatedAt": "2026-08-21T08:51:39.485Z",
   "repository": "Enkianssus/BiliNCM-Connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -92,42 +92,42 @@
       "id": "qqmusic",
       "name": "QQ音乐",
       "channel": "stable",
-      "version": "22.51.3",
+      "version": "22.52.1",
       "protocolVersion": 1,
       "minimumCoreVersion": "1.1.0",
       "playerVersionPolicy": "22.*",
-      "testedPlayerVersion": "22.22 / 22.41 / 22.51",
+      "testedPlayerVersion": "22.22 / 22.41 / 22.51 / 22.52",
       "runtime": "win-x86",
-      "asset": "bilincm-connector-qqmusic-22.51.3-win-x86.zip",
-      "size": 34712965,
-      "sha256": "07062bd0840dbf44b319fde362f9de9652fdf697c9264e373319636878ab1784",
-      "signature": "bZ65+0EKZ2PYOHZhOY7Fcr3pY7qP9mDrrns5XDfl5fDa9Kod+sxI3TW/4S73sDEGAOIbIJR9/I28LCeBy8OgBA==",
-      "publishedAt": "2026-08-20T14:11:14.182Z",
-      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/bilincm-connector-qqmusic-22.51.3-win-x86.zip?cache=2",
+      "asset": "bilincm-connector-qqmusic-22.52.1-win-x86.zip",
+      "size": 34720890,
+      "sha256": "db24cd8e8282f325a700f6e0fb0aa5c4e109f73bd316a906ab96fc30c11ab1a0",
+      "signature": "EPQTtLT9iLTOEE0Jf6yaZ5KjhOESSQ1N8rUzUsOJvuVHUSXuawNccXY072rkQHlBwMEHRWFTVcWnpZIFfBmEAQ==",
+      "publishedAt": "2026-08-21T08:51:39.485Z",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.52.1/bilincm-connector-qqmusic-22.52.1-win-x86.zip",
       "awooPackage": {
-        "asset": "awoo-connector-qqmusic-22.51.3-win-x86.zip",
-        "size": 34712959,
-        "sha256": "0492ba04c725b72c6feec7cb039f88a06349c6789445789a8c34849e8f9813ed",
-        "signature": "i34t1UlV/CwY3YKnA8P6p5MvVSpxoCSijT3797XTZvOuvj3+QgXhu3ForhEKyjG/wAY63uu3ZM2GYAR7BsNRCQ==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/awoo-connector-qqmusic-22.51.3-win-x86.zip?cache=2"
+        "asset": "awoo-connector-qqmusic-22.52.1-win-x86.zip",
+        "size": 34720884,
+        "sha256": "40e83f578545337f4032fc14d5f32cc1ea74cf8cc4a8eccd3ab56e2ecdcba114",
+        "signature": "wI/x8Nt5sRhHPHNgwQX8TbXpvkr+oW2LkmQbOI9M5F1d0lZOL41OJ7WPO1aP4ROjtKXGycBMJndeaV0To0ePBQ==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.52.1/awoo-connector-qqmusic-22.52.1-win-x86.zip"
       },
       "frameworkDependent": {
         "runtime": "win-x86",
         "runtimeChannel": "8.0",
-        "asset": "bilincm-connector-qqmusic-22.51.3-win-x86-framework-dependent.zip",
-        "size": 6784914,
-        "sha256": "6eaa0ec86e19883af708a0c550f8137b110554d55362bec799e0ce4604981fb3",
-        "signature": "HheIvI7cbe9d5xfOdtaWjyWV0H3wgvDmYItNYzea9hXngxyyLnJwSyvCUjDKkXTVuwgo6nt0ZWqUAW+b0MGXCQ==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/bilincm-connector-qqmusic-22.51.3-win-x86-framework-dependent.zip?cache=2"
+        "asset": "bilincm-connector-qqmusic-22.52.1-win-x86-framework-dependent.zip",
+        "size": 6785369,
+        "sha256": "5fe1ab70e8b01f642fa160aa28685ebb8bb599ed94811c7df41adc541d1499a8",
+        "signature": "vZpiCrpKMLY8DrqNx+V91zCuT48k1R9he/4o4OF1TUbVEZ1I7BmfwCN1WH8RMWYJNYROvS9tMLvE01l3Yo51BQ==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.52.1/bilincm-connector-qqmusic-22.52.1-win-x86-framework-dependent.zip"
       },
       "awooFrameworkDependent": {
         "runtime": "win-x86",
         "runtimeChannel": "8.0",
-        "asset": "awoo-connector-qqmusic-22.51.3-win-x86-framework-dependent.zip",
-        "size": 6784908,
-        "sha256": "13688d51fa80d53c3d2e1afbe37282f07d99829225511fa4fee1621611d92ae1",
-        "signature": "oVl3kYLYeeDiH8lwttIS/FR/qiSd5XYBQB6Lv2bD9TCTBw3EBY/UOVOr3pfSY9HrxRRuNoj16zbbA1IdlkMADA==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.51.3/awoo-connector-qqmusic-22.51.3-win-x86-framework-dependent.zip?cache=2"
+        "asset": "awoo-connector-qqmusic-22.52.1-win-x86-framework-dependent.zip",
+        "size": 6785363,
+        "sha256": "0f01274614629ecc373e383a160998b49adbd92776cb2e92dd8c535104c9f465",
+        "signature": "XOHEYK2mu2C8SbsHRtxos6MHBgnqquijuykpHdYydQjO1tRM8O/wSy1CoczJV0QB3gSW26ztUns7QloEYOw5Cw==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/download/qqmusic/22.52.1/awoo-connector-qqmusic-22.52.1-win-x86-framework-dependent.zip"
       }
     },
     "folia": {
