@@ -27,14 +27,28 @@ internal static class ConnectorRuntime
     {
         Console.InputEncoding = System.Text.Encoding.UTF8;
         Console.OutputEncoding = System.Text.Encoding.UTF8;
+        return await RunAsync(
+            connectorId,
+            adapter,
+            Console.In,
+            Console.Out);
+    }
 
+    internal static async Task<int> RunAsync(
+        string connectorId,
+        IPlayerAdapter adapter,
+        TextReader input,
+        TextWriter output)
+    {
         using var lifetimeCancellation = new CancellationTokenSource();
         Task? eventPump = null;
         var eventSource = adapter as IPlayerSnapshotEventSource;
+        string? shutdownRequestId = null;
+        Exception? cleanupError = null;
         try
         {
             string? line;
-            while ((line = await Console.In.ReadLineAsync()) is not null)
+            while ((line = await input.ReadLineAsync()) is not null)
             {
                 line = line.TrimStart('\uFEFF');
                 if (string.IsNullOrWhiteSpace(line))
@@ -60,11 +74,10 @@ internal static class ConnectorRuntime
                             "shutdown",
                             StringComparison.OrdinalIgnoreCase))
                     {
-                        await WriteResponseAsync(new ConnectorResponse(
-                            request.Id,
-                            true,
-                            new { stopped = true },
-                            null));
+                        // Do not acknowledge shutdown until every adapter task
+                        // has drained. Some adapters temporarily modify player
+                        // process state and restore it from their finally blocks.
+                        shutdownRequestId = request.Id;
                         break;
                     }
 
@@ -72,7 +85,7 @@ internal static class ConnectorRuntime
                             "ping",
                             StringComparison.OrdinalIgnoreCase))
                     {
-                        await WriteResponseAsync(new ConnectorResponse(
+                        await WriteResponseAsync(output, new ConnectorResponse(
                             request.Id,
                             true,
                             new
@@ -98,7 +111,7 @@ internal static class ConnectorRuntime
                     {
                         if (eventSource is null)
                         {
-                            await WriteResponseAsync(new ConnectorResponse(
+                            await WriteResponseAsync(output, new ConnectorResponse(
                                 request.Id,
                                 true,
                                 new
@@ -118,7 +131,7 @@ internal static class ConnectorRuntime
                                 + request.EventProtocolVersion);
                         }
 
-                        await WriteResponseAsync(new ConnectorResponse(
+                        await WriteResponseAsync(output, new ConnectorResponse(
                             request.Id,
                             true,
                             new
@@ -131,6 +144,7 @@ internal static class ConnectorRuntime
                         eventPump ??= PumpSnapshotEventsAsync(
                             connectorId,
                             eventSource,
+                            output,
                             lifetimeCancellation.Token);
                         continue;
                     }
@@ -150,7 +164,7 @@ internal static class ConnectorRuntime
                         adapter,
                         request,
                         timeout.Token);
-                    await WriteResponseAsync(new ConnectorResponse(
+                    await WriteResponseAsync(output, new ConnectorResponse(
                         request.Id,
                         true,
                         result,
@@ -158,7 +172,7 @@ internal static class ConnectorRuntime
                 }
                 catch (Exception exception)
                 {
-                    await WriteResponseAsync(new ConnectorResponse(
+                    await WriteResponseAsync(output, new ConnectorResponse(
                         request?.Id ?? string.Empty,
                         false,
                         null,
@@ -179,11 +193,36 @@ internal static class ConnectorRuntime
                 {
                     // Normal connector shutdown.
                 }
+                catch (Exception exception)
+                {
+                    cleanupError = exception;
+                }
             }
-            await adapter.DisposeAsync();
+            try
+            {
+                await adapter.DisposeAsync();
+            }
+            catch (Exception exception)
+            {
+                cleanupError ??= exception;
+            }
+
+            if (shutdownRequestId is not null)
+            {
+                await WriteResponseAsync(output, new ConnectorResponse(
+                    shutdownRequestId,
+                    cleanupError is null,
+                    cleanupError is null
+                        ? new { stopped = true, drained = true }
+                        : null,
+                    cleanupError is null
+                        ? null
+                        : $"{cleanupError.GetType().Name}: "
+                            + cleanupError.Message));
+            }
         }
 
-        return 0;
+        return cleanupError is null ? 0 : 1;
     }
 
     private static string GetVersion()
@@ -262,14 +301,16 @@ internal static class ConnectorRuntime
     }
 
     private static async Task WriteResponseAsync(
+        TextWriter output,
         ConnectorResponse response)
     {
-        await WriteEnvelopeAsync(response, CancellationToken.None);
+        await WriteEnvelopeAsync(output, response, CancellationToken.None);
     }
 
     private static async Task PumpSnapshotEventsAsync(
         string connectorId,
         IPlayerSnapshotEventSource eventSource,
+        TextWriter output,
         CancellationToken cancellationToken)
     {
         long sequence = 0;
@@ -283,6 +324,7 @@ internal static class ConnectorRuntime
                                    .ConfigureAwait(false))
                 {
                     await WriteEnvelopeAsync(
+                        output,
                         new ConnectorEvent(
                             "event",
                             "snapshot",
@@ -310,6 +352,7 @@ internal static class ConnectorRuntime
     }
 
     private static async Task WriteEnvelopeAsync(
+        TextWriter output,
         object envelope,
         CancellationToken cancellationToken)
     {
@@ -317,8 +360,8 @@ internal static class ConnectorRuntime
         await OutputGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await Console.Out.WriteLineAsync(json).ConfigureAwait(false);
-            await Console.Out.FlushAsync().ConfigureAwait(false);
+            await output.WriteLineAsync(json).ConfigureAwait(false);
+            await output.FlushAsync().ConfigureAwait(false);
         }
         finally
         {

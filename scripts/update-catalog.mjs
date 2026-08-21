@@ -62,7 +62,7 @@ const supported = {
   qqmusic: {
     name: 'QQ音乐',
     playerVersionPolicy: '22.*',
-    testedPlayerVersion: '22.22 / 22.41 / 22.51'
+    testedPlayerVersion: '22.22 / 22.41 / 22.51 / 22.52'
   },
   folia: {
     name: 'Folia',

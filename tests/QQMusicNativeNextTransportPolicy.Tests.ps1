@@ -63,8 +63,8 @@ foreach ($expectedProfile in $expectedProfiles) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.51.3') {
-    throw 'QQ Music connector version must be 22.51.3 for this track-matching fix.'
+if ([string]$project.Project.PropertyGroup.Version -ne '22.52.1') {
+    throw 'QQ Music connector version must follow the tested QQ Music 22.52 branch.'
 }
 
 Write-Output 'QQMusicNativeNextTransportPolicy.Tests passed.'

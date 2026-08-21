@@ -40,7 +40,8 @@ instead of reading the window title every 2 ms. Near a natural track ending it
 uses the latest media timeline to arm one pre-mute timer for 450 ms before the
 estimated end; timeline and playback events cancel and reschedule that timer.
 
-QQ Music connector 22.51.3 also treats the explicit instrumental suffixes
+QQ Music connector 22.52.1 includes the signed QQ Music 22.52 profile and also
+treats the explicit instrumental suffixes
 `(纯音乐)`, `(Inst.)`, and `(Instrumental)` as aliases only when the base title
 and artist both match. Live, Remix, and unrelated versions remain distinct, so
 the guarded-next verifier can accept QQ's alternate instrumental label without
@@ -112,7 +113,7 @@ component is the connector revision:
 
 - NetEase `3.1.37.205354` -> connector `3.1.37.205354.9`
 - KuGou `20.0.81.27563` -> connector `20.0.81.5`
-- QQ Music `22.41` -> connector `22.41.5`
+- QQ Music `22.52` -> connector `22.52.1`
 
 KuGou deliberately omits its noisy final client build component:
 
