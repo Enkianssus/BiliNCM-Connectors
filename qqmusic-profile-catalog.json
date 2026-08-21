@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generatedAt": "2026-08-15T18:28:13.921Z",
-  "repository": "Enkianssus/BiliNCM-Connectors",
+  "repository": "Enkianssus/awoo-connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "profiles": {
     "qqmusic": {

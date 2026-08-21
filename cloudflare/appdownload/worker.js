@@ -21,7 +21,7 @@ const CORE_PROJECTS = {
   }
 };
 
-const CONNECTOR_REPO = 'Enkianssus/BiliNCM-Connectors';
+const CONNECTOR_REPO = 'Enkianssus/awoo-connectors';
 const CONNECTOR_IDS = new Set(['netease', 'kugou', 'qqmusic', 'folia']);
 const OFFICIAL_OVERLAY_REPO =
   'Enkianssus/AwooMusicBot-Overlay-Default';
