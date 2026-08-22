@@ -62,6 +62,11 @@ before a new InsertNext send so the current item does not change. Unknown or
 failed profiles retain the old guarded fallback and explicitly ask the user to
 update the KuGou connector.
 
+KuGou connector 20.0.81.6 also keeps current-track identity stable when the
+desktop ticker temporarily changes spacing, appends a localized title, or falls
+back to an older `KuGou.ini` value. Confirmed native IDs remain authoritative,
+while distinct native IDs and real title changes still advance normally.
+
 The Folia connector talks only to the local Stage HTTP/WebSocket service on
 port 32107. Awoo MusicBot passes the compatibility environment variable
 `BILINCM_FOLIA_TOKEN` to the child process at
@@ -112,7 +117,7 @@ The three desktop-player connectors use player-scoped versions whose final
 component is the connector revision:
 
 - NetEase `3.1.37.205354` -> connector `3.1.37.205354.9`
-- KuGou `20.0.81.27563` -> connector `20.0.81.5`
+- KuGou `20.0.81.27563` -> connector `20.0.81.6`
 - QQ Music `22.52` -> connector `22.52.1`
 
 KuGou deliberately omits its noisy final client build component:

@@ -25,6 +25,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
     private readonly KugouGuardedNextMonitor _nextGuard;
     private readonly object _pendingNextSync = new();
     private readonly object _trackSync = new();
+    private readonly object _currentIdentitySync = new();
     private readonly Dictionary<string, PlayerTrack> _knownTracks =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _artworkLookups =
@@ -36,6 +37,12 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private PendingKugouNext? _pendingNext;
     private DateTimeOffset? _pendingTargetObservedAt;
+    private PlayerTrack? _lastConfirmedCurrent;
+    private string _pendingIniCandidateKey = string.Empty;
+    private int _pendingIniObservationCount;
+    private DateTimeOffset? _pendingIniFirstObservedAt;
+    private DateTimeOffset? _lastConfirmedWindowTitleAt;
+    private DateTimeOffset? _lastConfirmedObservedAt;
     private volatile bool _httpSearchFallbackUsed;
     private volatile string _httpSearchStatus =
         "搜索仅使用 HTTPS；明文 HTTP 回退未启用";
@@ -2023,13 +2030,128 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             state.Hash);
         var known = FindKnownTrack(id, state.Hash);
         known ??= FindKnownTrackByMetadata(fallback);
-        if (known is not null)
+        var candidate = known ?? fallback;
+        if (TryHoldTransientIni(state, candidate, out var held))
         {
-            return known;
+            return held;
         }
 
-        ScheduleArtworkLookup(fallback);
-        return fallback;
+        lock (_currentIdentitySync)
+        {
+            _pendingIniCandidateKey = string.Empty;
+            _pendingIniObservationCount = 0;
+            _pendingIniFirstObservedAt = null;
+            _lastConfirmedObservedAt = DateTimeOffset.UtcNow;
+            if (KugouTrackIdentityPolicy.IsStableId(candidate.Id))
+            {
+                _lastConfirmedCurrent = candidate;
+            }
+            else if (_lastConfirmedCurrent is not null
+                     && !KugouTrackIdentityPolicy.TracksRepresentSameSong(
+                         candidate.Id,
+                         candidate.Title,
+                         candidate.Artist,
+                         _lastConfirmedCurrent.Id,
+                         _lastConfirmedCurrent.Title,
+                         _lastConfirmedCurrent.Artist))
+            {
+                // A real WindowTitle change without a stable native ID must
+                // not leave the previous numeric identity armed forever.
+                _lastConfirmedCurrent = null;
+            }
+
+            if (string.Equals(
+                    state.Source,
+                    "WindowTitle",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _lastConfirmedWindowTitleAt = _lastConfirmedObservedAt;
+            }
+        }
+
+        if (known is null)
+        {
+            ScheduleArtworkLookup(fallback);
+        }
+
+        return candidate;
+    }
+
+    private bool TryHoldTransientIni(
+        KugouPlaybackState state,
+        PlayerTrack candidate,
+        out PlayerTrack? held)
+    {
+        held = null;
+        lock (_currentIdentitySync)
+        {
+            var confirmed = _lastConfirmedCurrent;
+            if (confirmed is null
+                || !string.Equals(
+                    state.Source,
+                    "KuGou.ini",
+                    StringComparison.OrdinalIgnoreCase)
+                || KugouTrackIdentityPolicy.TracksRepresentSameSong(
+                    candidate.Id,
+                    candidate.Title,
+                    candidate.Artist,
+                    confirmed.Id,
+                    confirmed.Title,
+                    confirmed.Artist))
+            {
+                _pendingIniCandidateKey = string.Empty;
+                _pendingIniObservationCount = 0;
+                _pendingIniFirstObservedAt = null;
+                return false;
+            }
+
+            var candidateKey = string.Join(
+                '\u001f',
+                candidate.Id,
+                candidate.Title,
+                candidate.Artist);
+            if (string.Equals(
+                    _pendingIniCandidateKey,
+                    candidateKey,
+                    StringComparison.Ordinal))
+            {
+                var now = DateTimeOffset.UtcNow;
+                if (_pendingIniFirstObservedAt is { } firstObservedAt
+                    && now - firstObservedAt
+                        >= TimeSpan.FromMilliseconds(250))
+                {
+                    _pendingIniObservationCount++;
+                }
+            }
+            else
+            {
+                _pendingIniCandidateKey = candidateKey;
+                _pendingIniObservationCount = 1;
+                _pendingIniFirstObservedAt = DateTimeOffset.UtcNow;
+            }
+
+            var observationNow = DateTimeOffset.UtcNow;
+
+            if (KugouTrackIdentityPolicy.ShouldHoldTransientIni(
+                    state.Source,
+                    confirmed.Id,
+                    confirmed.Title,
+                    confirmed.Artist,
+                    candidate.Id,
+                    candidate.Title,
+                    candidate.Artist,
+                    _pendingIniObservationCount,
+                    state.IniLastWriteTime,
+                    _lastConfirmedWindowTitleAt,
+                    _pendingIniFirstObservedAt,
+                    observationNow))
+            {
+                held = confirmed;
+                return true;
+            }
+
+            return false;
+        }
     }
 
     private PlayerTrack? FindKnownTrack(params string[] identities)
@@ -2180,36 +2302,14 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
 
     private static bool TrackMatches(PlayerTrack? actual, PlayerTrack expected)
     {
-        if (actual is null)
-        {
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(actual.Id)
-            && actual.Id.Equals(expected.Id, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var actualTitle = NormalizeTrackText(actual.Title);
-        var expectedTitle = NormalizeTrackText(expected.Title);
-        var titleMatches = actualTitle == expectedTitle
-            || (expectedTitle.Length >= 4
-                && actualTitle.StartsWith(
-                    expectedTitle,
-                    StringComparison.Ordinal));
-        return titleMatches
-            && (string.IsNullOrWhiteSpace(expected.Artist)
-                || NormalizeTrackText(actual.Artist)
-                    == NormalizeTrackText(expected.Artist));
-    }
-
-    private static string NormalizeTrackText(string value)
-    {
-        return string.Concat(
-            value.Normalize(NormalizationForm.FormKC)
-                .Where(char.IsLetterOrDigit))
-            .ToUpperInvariant();
+        return actual is not null
+            && KugouTrackIdentityPolicy.TracksRepresentSameSong(
+                actual.Id,
+                actual.Title,
+                actual.Artist,
+                expected.Id,
+                expected.Title,
+                expected.Artist);
     }
 
     private static string BuildSnapshotFingerprint(PlayerSnapshot snapshot)

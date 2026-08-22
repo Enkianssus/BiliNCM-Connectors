@@ -2087,18 +2087,31 @@ internal static class KugouNativeController
             return state;
         }
 
-        var identityKey = NormalizeSongIdentityKey(state.RawTitle);
-        if (SongIdentityCache.TryGetValue(identityKey, out var cached))
+        var stateIdentityKeys = KugouTrackIdentityPolicy.BuildIdentityKeys(
+            state.RawTitle,
+            state.Artist,
+            state.Title);
+        foreach (var key in stateIdentityKeys)
         {
-            return ApplySongIdentity(state, cached);
+            if (SongIdentityCache.TryGetValue(key, out var cached))
+            {
+                return ApplySongIdentity(state, cached);
+            }
         }
 
         try
         {
+            var searchQuery = KugouTrackIdentityPolicy.BuildSearchQuery(
+                state.Title,
+                state.Artist);
+            if (string.IsNullOrWhiteSpace(searchQuery))
+            {
+                searchQuery = state.RawTitle;
+            }
             var endpoint =
                 "http://mobilecdn.kugou.com/api/v3/search/song"
                 + "?format=json"
-                + $"&keyword={Uri.EscapeDataString(state.RawTitle)}"
+                + $"&keyword={Uri.EscapeDataString(searchQuery)}"
                 + "&page=1&pagesize=10&showtype=1";
             using var response = await HttpClient
                 .GetAsync(endpoint, cancellationToken)
@@ -2118,22 +2131,27 @@ internal static class KugouNativeController
                 return state with { IdentitySource = "KugouSearchNoResult" };
             }
 
-            var normalizedRawTitle = NormalizeSongIdentityKey(state.RawTitle);
-            var normalizedArtist = NormalizeSongIdentityKey(state.Artist);
-            var normalizedTitle = NormalizeSongIdentityKey(state.Title);
             JsonElement? exactSong = null;
             foreach (var song in info.EnumerateArray())
             {
                 var filename = ReadJsonText(song, "filename");
                 var singerName = ReadJsonText(song, "singername");
                 var songName = ReadJsonText(song, "songname");
-                var exactFilename =
-                    NormalizeSongIdentityKey(filename) == normalizedRawTitle;
+                var candidateKeys =
+                    KugouTrackIdentityPolicy.BuildIdentityKeys(
+                        filename,
+                        singerName,
+                        songName);
+                var exactFilename = candidateKeys.Any(
+                    key => stateIdentityKeys.Contains(
+                        key,
+                        StringComparer.Ordinal));
                 var exactParts =
-                    !string.IsNullOrWhiteSpace(normalizedArtist)
-                    && !string.IsNullOrWhiteSpace(normalizedTitle)
-                    && NormalizeSongIdentityKey(singerName) == normalizedArtist
-                    && NormalizeSongIdentityKey(songName) == normalizedTitle;
+                    KugouTrackIdentityPolicy.MetadataRepresentsSameSong(
+                        songName,
+                        singerName,
+                        state.Title,
+                        state.Artist);
                 if (exactFilename || exactParts)
                 {
                     exactSong = song;
@@ -2148,7 +2166,10 @@ internal static class KugouNativeController
                     0,
                     string.Empty,
                     "KugouSearchNoExactMatch");
-                SongIdentityCache[identityKey] = unresolved;
+                foreach (var key in stateIdentityKeys)
+                {
+                    SongIdentityCache[key] = unresolved;
+                }
                 return ApplySongIdentity(state, unresolved);
             }
 
@@ -2166,7 +2187,10 @@ internal static class KugouNativeController
                 identity.MixSongId,
                 identity.Hash,
                 identity.Source);
-            SongIdentityCache[identityKey] = identity;
+            foreach (var key in stateIdentityKeys)
+            {
+                SongIdentityCache[key] = identity;
+            }
             return ApplySongIdentity(state, identity);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -2189,7 +2213,9 @@ internal static class KugouNativeController
         var iniTitle = ReadIniString(PlaybackSection, "LastPlayingTitleName").Trim();
         var liveTitle = ExtractTitleFromKugouTicker(windowTitle);
         var rawTitle = string.IsNullOrWhiteSpace(liveTitle) ? iniTitle : liveTitle;
-        var (artist, title) = ParseArtistAndTitle(rawTitle);
+        var parsed = KugouTrackIdentityPolicy.ParseArtistAndTitle(rawTitle);
+        var artist = parsed.Artist;
+        var title = parsed.Title;
 
         DateTimeOffset? lastWrite = File.Exists(KugouIniPath)
             ? new DateTimeOffset(File.GetLastWriteTime(KugouIniPath))
@@ -2206,11 +2232,18 @@ internal static class KugouNativeController
             ReadIniInt(PlaybackSection, "LastPlayingSongTable"),
             ReadIniLong(PlaybackSection, "LastPlayingSongPos"),
             lastWrite);
-        return SongIdentityCache.TryGetValue(
-            NormalizeSongIdentityKey(rawTitle),
-            out var identity)
-            ? ApplySongIdentity(state, identity)
-            : state;
+        foreach (var key in KugouTrackIdentityPolicy.BuildIdentityKeys(
+                     rawTitle,
+                     artist,
+                     title))
+        {
+            if (SongIdentityCache.TryGetValue(key, out var identity))
+            {
+                return ApplySongIdentity(state, identity);
+            }
+        }
+
+        return state;
     }
 
     private static string ExtractTitleFromKugouTicker(string windowTitle)
@@ -2259,17 +2292,12 @@ internal static class KugouNativeController
             mixSongId,
             hash.ToUpperInvariant(),
             source);
-        if (!string.IsNullOrWhiteSpace(filename))
+        foreach (var key in KugouTrackIdentityPolicy.BuildIdentityKeys(
+                     filename,
+                     singerName,
+                     songName))
         {
-            SongIdentityCache[NormalizeSongIdentityKey(filename)] = identity;
-        }
-
-        var composedName = string.IsNullOrWhiteSpace(singerName)
-            ? songName
-            : $"{singerName} - {songName}";
-        if (!string.IsNullOrWhiteSpace(composedName))
-        {
-            SongIdentityCache[NormalizeSongIdentityKey(composedName)] = identity;
+            SongIdentityCache[key] = identity;
         }
     }
 
@@ -2284,37 +2312,6 @@ internal static class KugouNativeController
             Hash = identity.Hash,
             IdentitySource = identity.Source
         };
-    }
-
-    private static string NormalizeSongIdentityKey(string value)
-    {
-        var normalized = value
-            .Normalize(NormalizationForm.FormKC)
-            .Trim()
-            .ToUpperInvariant();
-        var builder = new StringBuilder(normalized.Length);
-        foreach (var character in normalized)
-        {
-            if (!char.IsWhiteSpace(character))
-            {
-                builder.Append(character);
-            }
-        }
-
-        return builder.ToString();
-    }
-
-    private static (string Artist, string Title) ParseArtistAndTitle(string rawTitle)
-    {
-        var separatorIndex = rawTitle.IndexOf(" - ", StringComparison.Ordinal);
-        if (separatorIndex < 0)
-        {
-            return (string.Empty, rawTitle);
-        }
-
-        return (
-            rawTitle[..separatorIndex].Trim(),
-            rawTitle[(separatorIndex + 3)..].Trim());
     }
 
     public static IReadOnlyList<WindowInfo> InspectWindows()
