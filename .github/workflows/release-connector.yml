@@ -46,10 +46,16 @@ jobs:
             'folia' { 'Folia' }
           }
           $runtime = if ($id -eq 'netease') { 'win-x64' } else { 'win-x86' }
-          $asset = "awoo-connector-$id-$version-$runtime.zip"
+          $versionPattern = switch ($id) {
+            'netease' { '^\d+\.\d+\.\d+\.\d+\.\d+$' }
+            'kugou' { '^\d+\.\d+\.\d+\.\d+$' }
+            'qqmusic' { '^\d+\.\d+\.\d+$' }
+            'folia' { '^\d+\.\d+\.\d+$' }
+          }
+          if ($version -notmatch $versionPattern) {
+            throw "Invalid $id connector version: $version"
+          }
           $frameworkAsset = "awoo-connector-$id-$version-$runtime-framework-dependent.zip"
-          $legacyAsset = "bilincm-connector-$id-$version-$runtime.zip"
-          $legacyFrameworkAsset = "bilincm-connector-$id-$version-$runtime-framework-dependent.zip"
           $assemblyVersion = $version
           if ($id -eq 'netease') {
             $parts = $version -split '\.'
@@ -63,10 +69,7 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
           "assembly_version=$assemblyVersion" >> $env:GITHUB_OUTPUT
           "project_name=$projectName" >> $env:GITHUB_OUTPUT
-          "asset=$asset" >> $env:GITHUB_OUTPUT
           "framework_asset=$frameworkAsset" >> $env:GITHUB_OUTPUT
-          "legacy_asset=$legacyAsset" >> $env:GITHUB_OUTPUT
-          "legacy_framework_asset=$legacyFrameworkAsset" >> $env:GITHUB_OUTPUT
           "runtime=$runtime" >> $env:GITHUB_OUTPUT
 
       - name: Checkout pinned CEF 4472 headers
@@ -113,23 +116,7 @@ jobs:
           $id = '${{ steps.metadata.outputs.id }}'
           $projectName = '${{ steps.metadata.outputs.project_name }}'
           $version = '${{ steps.metadata.outputs.version }}'
-          $output = "artifacts/$id/self-contained"
           $frameworkOutput = "artifacts/$id/framework-dependent"
-          $legacyOutput = "artifacts/$id/legacy-self-contained"
-          $legacyFrameworkOutput = "artifacts/$id/legacy-framework-dependent"
-
-          dotnet publish `
-            "src/$projectName/BiliNCM.Connector.$projectName.csproj" `
-            -c Release `
-            -r "${{ steps.metadata.outputs.runtime }}" `
-            --self-contained true `
-            -p:Version="${{ steps.metadata.outputs.assembly_version }}" `
-            -p:InformationalVersion="$version" `
-            -o "$output"
-
-          node scripts/smoke-connector.mjs `
-            "$output/Awoo.Connector.$projectName.exe" `
-            "$id"
 
           dotnet publish `
             "src/$projectName/BiliNCM.Connector.$projectName.csproj" `
@@ -150,55 +137,21 @@ jobs:
             throw 'Framework-dependent publish did not contain its apphost and managed entry assembly.'
           }
 
-          New-Item -ItemType Directory -Force $legacyOutput | Out-Null
-          New-Item -ItemType Directory -Force $legacyFrameworkOutput | Out-Null
-          Copy-Item -Recurse -Force "$output/*" $legacyOutput
-          Copy-Item -Recurse -Force "$frameworkOutput/*" $legacyFrameworkOutput
-          Move-Item `
-            "$legacyOutput/Awoo.Connector.$projectName.exe" `
-            "$legacyOutput/BiliNCM.Connector.$projectName.exe"
-          Move-Item `
-            "$legacyFrameworkOutput/Awoo.Connector.$projectName.exe" `
-            "$legacyFrameworkOutput/BiliNCM.Connector.$projectName.exe"
-
           node scripts/smoke-connector.mjs `
-            "$legacyOutput/BiliNCM.Connector.$projectName.exe" `
+            "$frameworkExecutable" `
             "$id"
-
-          Compress-Archive `
-            -Path "$output/*" `
-            -DestinationPath "artifacts/${{ steps.metadata.outputs.asset }}" `
-            -CompressionLevel Optimal
 
           Compress-Archive `
             -Path "$frameworkOutput/*" `
             -DestinationPath "artifacts/${{ steps.metadata.outputs.framework_asset }}" `
             -CompressionLevel Optimal
 
-          Compress-Archive `
-            -Path "$legacyOutput/*" `
-            -DestinationPath "artifacts/${{ steps.metadata.outputs.legacy_asset }}" `
-            -CompressionLevel Optimal
-
-          Compress-Archive `
-            -Path "$legacyFrameworkOutput/*" `
-            -DestinationPath "artifacts/${{ steps.metadata.outputs.legacy_framework_asset }}" `
-            -CompressionLevel Optimal
-
-      - name: Sign release asset
+      - name: Sign framework-dependent release asset
         id: signing
         shell: pwsh
         env:
           CONNECTOR_SIGNING_PRIVATE_KEY: ${{ secrets.CONNECTOR_SIGNING_PRIVATE_KEY }}
         run: |
-          $asset = "artifacts/${{ steps.metadata.outputs.asset }}"
-          $result = node scripts/sign-release.mjs "$asset" | ConvertFrom-Json
-          "sha256=$($result.sha256)" >> $env:GITHUB_OUTPUT
-          "signature=$($result.signature)" >> $env:GITHUB_OUTPUT
-          "size=$($result.size)" >> $env:GITHUB_OUTPUT
-          $result.signature | Set-Content -NoNewline "$asset.sig"
-          $result.sha256 | Set-Content -NoNewline "$asset.sha256"
-
           $frameworkAsset = "artifacts/${{ steps.metadata.outputs.framework_asset }}"
           $frameworkResult = node scripts/sign-release.mjs "$frameworkAsset" | ConvertFrom-Json
           "framework_sha256=$($frameworkResult.sha256)" >> $env:GITHUB_OUTPUT
@@ -207,77 +160,37 @@ jobs:
           $frameworkResult.signature | Set-Content -NoNewline "$frameworkAsset.sig"
           $frameworkResult.sha256 | Set-Content -NoNewline "$frameworkAsset.sha256"
 
-          $legacyAsset = "artifacts/${{ steps.metadata.outputs.legacy_asset }}"
-          $legacyResult = node scripts/sign-release.mjs "$legacyAsset" | ConvertFrom-Json
-          "legacy_sha256=$($legacyResult.sha256)" >> $env:GITHUB_OUTPUT
-          "legacy_signature=$($legacyResult.signature)" >> $env:GITHUB_OUTPUT
-          "legacy_size=$($legacyResult.size)" >> $env:GITHUB_OUTPUT
-          $legacyResult.signature | Set-Content -NoNewline "$legacyAsset.sig"
-          $legacyResult.sha256 | Set-Content -NoNewline "$legacyAsset.sha256"
-
-          $legacyFrameworkAsset = "artifacts/${{ steps.metadata.outputs.legacy_framework_asset }}"
-          $legacyFrameworkResult = node scripts/sign-release.mjs "$legacyFrameworkAsset" | ConvertFrom-Json
-          "legacy_framework_sha256=$($legacyFrameworkResult.sha256)" >> $env:GITHUB_OUTPUT
-          "legacy_framework_signature=$($legacyFrameworkResult.signature)" >> $env:GITHUB_OUTPUT
-          "legacy_framework_size=$($legacyFrameworkResult.size)" >> $env:GITHUB_OUTPUT
-          $legacyFrameworkResult.signature | Set-Content -NoNewline "$legacyFrameworkAsset.sig"
-          $legacyFrameworkResult.sha256 | Set-Content -NoNewline "$legacyFrameworkAsset.sha256"
-
       - name: Create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $asset = "artifacts/${{ steps.metadata.outputs.asset }}"
           $frameworkAsset = "artifacts/${{ steps.metadata.outputs.framework_asset }}"
-          $legacyAsset = "artifacts/${{ steps.metadata.outputs.legacy_asset }}"
-          $legacyFrameworkAsset = "artifacts/${{ steps.metadata.outputs.legacy_framework_asset }}"
           gh release create "${{ github.ref_name }}" `
-            "$asset" `
-            "$asset.sig" `
-            "$asset.sha256" `
             "$frameworkAsset" `
             "$frameworkAsset.sig" `
             "$frameworkAsset.sha256" `
-            "$legacyAsset" `
-            "$legacyAsset.sig" `
-            "$legacyAsset.sha256" `
-            "$legacyFrameworkAsset" `
-            "$legacyFrameworkAsset.sig" `
-            "$legacyFrameworkAsset.sha256" `
             --title "${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}" `
-            --notes "Awoo MusicBot ${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}. The Awoo-named packages are preferred by 1.1.7 and newer; signed legacy-name aliases keep older Awoo MusicBot versions working."
+            --notes "Awoo MusicBot ${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}. This forward v2 release contains only the signed Awoo framework-dependent package. Existing v1 releases remain available for older cores."
 
-      - name: Update stable catalog
+      - name: Update forward v2 catalog
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git fetch origin main
           git checkout -B main origin/main
-          node scripts/update-catalog.mjs `
+          node scripts/update-catalog-v2.mjs `
             "${{ steps.metadata.outputs.id }}" `
             "${{ steps.metadata.outputs.version }}" `
-            "${{ steps.metadata.outputs.asset }}" `
-            "${{ steps.signing.outputs.sha256 }}" `
-            "${{ steps.signing.outputs.signature }}" `
-            "${{ steps.signing.outputs.size }}" `
-            "${{ steps.metadata.outputs.legacy_asset }}" `
-            "${{ steps.signing.outputs.legacy_sha256 }}" `
-            "${{ steps.signing.outputs.legacy_signature }}" `
-            "${{ steps.signing.outputs.legacy_size }}" `
-            "${{ steps.metadata.outputs.runtime }}" `
             "${{ steps.metadata.outputs.framework_asset }}" `
             "${{ steps.signing.outputs.framework_sha256 }}" `
             "${{ steps.signing.outputs.framework_signature }}" `
             "${{ steps.signing.outputs.framework_size }}" `
-            "${{ steps.metadata.outputs.legacy_framework_asset }}" `
-            "${{ steps.signing.outputs.legacy_framework_sha256 }}" `
-            "${{ steps.signing.outputs.legacy_framework_signature }}" `
-            "${{ steps.signing.outputs.legacy_framework_size }}" `
+            "${{ steps.metadata.outputs.runtime }}" `
             "8.0"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add catalog.json
-          git commit -m "Update ${{ steps.metadata.outputs.id }} connector catalog"
+          git add catalog-v2.json
+          git commit -m "Update ${{ steps.metadata.outputs.id }} connector v2 catalog"
           git push origin main

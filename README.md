@@ -150,6 +150,11 @@ For Folia, the Stage API contract is treated as the player-version baseline.
 
 ## Build
 
+The commands below are useful for local connector development. The forward
+release workflow uses the framework-dependent form (`--self-contained false`);
+the self-contained form remains documented only for reproducing or inspecting
+the frozen v1 packages.
+
 ```powershell
 dotnet publish .\src\Netease\BiliNCM.Connector.Netease.csproj -c Release -r win-x64 --self-contained true
 dotnet publish .\src\Kugou\BiliNCM.Connector.Kugou.csproj -c Release -r win-x86 --self-contained true
@@ -159,28 +164,39 @@ dotnet publish .\src\Folia\BiliNCM.Connector.Folia.csproj -c Release -r win-x86 
 
 ## Update catalog
 
-The stable catalog is served through:
+The published v1 catalog remains available for older clients:
 
 `https://app.enkianss.us/connectors/v1/catalog.json`
 
-Release assets are signed with Ed25519. Awoo MusicBot verifies both the signature and
-SHA-256 digest before activating a downloaded connector, and retains the
-previous version for rollback.
+It is a frozen compatibility snapshot. Its self-contained packages, signed
+legacy-name aliases, old Tags and Release assets are not deleted or repointed;
+Awoo MusicBot 1.1.0-1.1.9 continues to use that contract. Existing
+self-contained installations also remain runnable in 1.1.10.
 
-Each release publishes Awoo-named packages in both deployment forms:
+The forward catalog is kept separately in `catalog-v2.json` and is intended for
+Awoo MusicBot 1.1.10 and newer:
 
-- The self-contained ZIP carries its own .NET runtime.
-- The smaller `framework-dependent` ZIP uses Awoo MusicBot's private,
-  per-architecture .NET 8 runtime shared by all connectors. Runtime download or
-  health-check failures automatically fall back to the self-contained package.
-- Signed legacy-name aliases remain in the catalog for older Awoo MusicBot
-  versions. Awoo MusicBot 1.1.7 and newer prefer the new `Awoo.Connector.*`
-  executable and `awoo-connector-*` archive names, while existing installations
-  continue to launch without a forced migration.
+`https://app.enkianss.us/connectors/v2/catalog.json`
 
-Runtime packaging and connector protocol compatibility are independent. Set
-`minimumCoreVersion` only when connector behavior truly requires a newer core;
-do not raise it merely because a framework-dependent package was added.
+Every v2 connector entry has `minimumCoreVersion: "1.1.10"` and exactly one
+`package` object with `deployment: "framework-dependent"`. A future connector
+Release contains only the Awoo framework-dependent ZIP and its `.sig` and
+`.sha256` sidecars. The ZIP uses Awoo MusicBot's private, per-architecture .NET
+8 runtime; if the runtime or package cannot be installed, the existing
+connector remains active and the client reports the failure. No v2
+self-contained or `BiliNCM.*` archive is produced.
+
+Release assets are signed with Ed25519. Awoo MusicBot verifies both the
+signature and SHA-256 digest before activating a downloaded connector, and
+retains the previous version for rollback. See
+[`docs/CONNECTOR_V2_RELEASE.md`](docs/CONNECTOR_V2_RELEASE.md) for the exact
+tag, asset and proxy contract.
+
+Runtime packaging and connector protocol compatibility are independent. The
+v2 `minimumCoreVersion` is a catalog-schema boundary: it prevents old cores
+from interpreting the forward-only `package` field as a v1 entry, not a claim
+that the connector protocol changed. QQ Music compatibility profiles retain
+their separate v1 catalog until a profile-specific migration is designed.
 
 QQ Music compatibility profiles have a separate signed update catalog:
 

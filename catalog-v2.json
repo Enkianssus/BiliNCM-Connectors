@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-22T15:10:30.134Z",
+  "repository": "Enkianssus/awoo-connectors",
+  "publicKeyId": "bilincm-connectors-2026-01",
+  "connectors": {
+    "netease": {
+      "id": "netease",
+      "name": "网易云音乐",
+      "channel": "stable",
+      "version": "3.1.37.205354.9",
+      "protocolVersion": 1,
+      "minimumCoreVersion": "1.1.10",
+      "playerVersionPolicy": "3.1.*",
+      "testedPlayerVersion": "3.1.37.205354",
+      "publishedAt": "2026-08-22T15:10:30.134Z",
+      "package": {
+        "deployment": "framework-dependent",
+        "runtime": "win-x64",
+        "runtimeChannel": "8.0",
+        "asset": "awoo-connector-netease-3.1.37.205354.9-win-x64-framework-dependent.zip",
+        "size": 6890096,
+        "sha256": "eb8df0629b52be39ddbb5dace3420d8e93a6d19cf5b77bd51dd7ec12211b0890",
+        "signature": "eNtCUIR7wKEYcK0bWnQ0QTzcGOJvn8B1rizat2FrJI7t/C7i6sD2NbyIs8jwj5LDNMi2nQ+UzDoNDGAQ1JdFDw==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v2/download/netease/3.1.37.205354.9/awoo-connector-netease-3.1.37.205354.9-win-x64-framework-dependent.zip"
+      }
+    },
+    "kugou": {
+      "id": "kugou",
+      "name": "酷狗音乐",
+      "channel": "stable",
+      "version": "20.1.41.1",
+      "protocolVersion": 1,
+      "minimumCoreVersion": "1.1.10",
+      "playerVersionPolicy": "20.*",
+      "testedPlayerVersion": "20.1.41.27870",
+      "publishedAt": "2026-08-22T15:10:30.134Z",
+      "package": {
+        "deployment": "framework-dependent",
+        "runtime": "win-x86",
+        "runtimeChannel": "8.0",
+        "asset": "awoo-connector-kugou-20.1.41.1-win-x86-framework-dependent.zip",
+        "size": 6783403,
+        "sha256": "bc8dc38a104b586c6a1d2aeb6acddf3c501380562872c0cd6eb16af6f6b1ceba",
+        "signature": "jnkAyNYediK1wit0sBmQGr1S8Wpm2tOuse6FD3I4KD+8YMa9X03nUiUkSm9HpUoO7VfagV/Yt2X28qIfMyCHBQ==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v2/download/kugou/20.1.41.1/awoo-connector-kugou-20.1.41.1-win-x86-framework-dependent.zip"
+      }
+    },
+    "qqmusic": {
+      "id": "qqmusic",
+      "name": "QQ音乐",
+      "channel": "stable",
+      "version": "22.52.1",
+      "protocolVersion": 1,
+      "minimumCoreVersion": "1.1.10",
+      "playerVersionPolicy": "22.*",
+      "testedPlayerVersion": "22.22 / 22.41 / 22.51 / 22.52",
+      "publishedAt": "2026-08-22T15:10:30.134Z",
+      "package": {
+        "deployment": "framework-dependent",
+        "runtime": "win-x86",
+        "runtimeChannel": "8.0",
+        "asset": "awoo-connector-qqmusic-22.52.1-win-x86-framework-dependent.zip",
+        "size": 6785363,
+        "sha256": "0f01274614629ecc373e383a160998b49adbd92776cb2e92dd8c535104c9f465",
+        "signature": "XOHEYK2mu2C8SbsHRtxos6MHBgnqquijuykpHdYydQjO1tRM8O/wSy1CoczJV0QB3gSW26ztUns7QloEYOw5Cw==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v2/download/qqmusic/22.52.1/awoo-connector-qqmusic-22.52.1-win-x86-framework-dependent.zip"
+      }
+    },
+    "folia": {
+      "id": "folia",
+      "name": "Folia",
+      "channel": "stable",
+      "version": "1.1.3",
+      "protocolVersion": 1,
+      "minimumCoreVersion": "1.1.10",
+      "playerVersionPolicy": "Stage API",
+      "testedPlayerVersion": "Stage API",
+      "publishedAt": "2026-08-22T15:10:30.134Z",
+      "package": {
+        "deployment": "framework-dependent",
+        "runtime": "win-x86",
+        "runtimeChannel": "8.0",
+        "asset": "awoo-connector-folia-1.1.3-win-x86-framework-dependent.zip",
+        "size": 6714787,
+        "sha256": "036470b9fc10b60ad9bd6a45ea98ed9923bc4dd9e5c4e7db59d110f9c599fb1c",
+        "signature": "LFPNcvgwlNiB/IniIzjX2uxORFgNwge/4D7lu1j41SiomgsBETqF67q2xf4LJjvNkLZsYFNbjCct6pxw/Y0kBw==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v2/download/folia/1.1.3/awoo-connector-folia-1.1.3-win-x86-framework-dependent.zip"
+      }
+    }
+  }
+}

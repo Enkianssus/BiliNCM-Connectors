@@ -36,19 +36,32 @@
 
 ## Packaging and compatibility
 
-- Each connector Release must contain Awoo and legacy archives, both
-  self-contained and framework-dependent. Each ZIP requires `.sig` and
-  `.sha256`, for 12 assets total.
-- Preserve `Awoo.Connector.*.exe` for current cores and
-  `BiliNCM.Connector.*.exe` aliases for old cores.
-- Preserve all `app.enkianss.us/connectors/v1/...` URLs and
-  `publicKeyId = bilincm-connectors-2026-01`.
+- The existing v1 Release and `catalog.json` contract is immutable: its four
+  archives (Awoo and legacy names, self-contained and framework-dependent),
+  sidecars, old Tags and stable `/connectors/v1/...` URLs remain available for
+  Awoo MusicBot 1.1.0-1.1.9. Do not rebuild, delete or repoint them.
+- Future desktop-connector Tags use the forward v2 contract. Each new Release
+  contains exactly one Awoo framework-dependent archive plus its `.sig` and
+  `.sha256` sidecars (three assets total):
+  `awoo-connector-{id}-{version}-{rid}-framework-dependent.zip`.
+  Self-contained and `BiliNCM.*` compatibility archives are not built for v2.
+- `catalog-v2.json` is the forward catalog. Its `schemaVersion` is `2`, every
+  entry has `minimumCoreVersion = 1.1.10`, and its `package` object is the only
+  package field. `package.deployment` is `framework-dependent`; the entry has
+  no legacy, self-contained or Awoo-full-package aliases.
+- Preserve `Awoo.Connector.*.exe` inside every v2 package. Already-installed
+  `BiliNCM.Connector.*.exe` and self-contained connectors remain valid for old
+  and new cores; the v2 cutover does not rename or remove local installations.
+- Preserve `publicKeyId = bilincm-connectors-2026-01`. The v2 catalog and assets
+  use the same Ed25519 signing key and immutable Release policy as v1.
 - Do not manually write Release hashes, signatures, sizes, or URLs. The tag
-  workflow signs the final ZIPs and `github-actions[bot]` updates the Catalog.
-- Do not declare a release complete until the workflow, Release assets,
-  Catalog bot commit, public proxy, Range download, signature/hash, and old/new
-  core compatibility are verified.
-- Publish multiple connectors sequentially and wait for each Catalog update;
+  workflow signs the final ZIP and `github-actions[bot]` updates only
+  `catalog-v2.json`; it must not modify the frozen v1 catalog.
+- Do not declare a release complete until the workflow, Release assets, v2
+  Catalog bot commit, public v2 proxy, Range download, signature/hash, and
+  1.1.10 compatibility are verified. Old-core validation continues against
+  the frozen v1 catalog and already-published Releases.
+- Publish multiple connectors sequentially and wait for each v2 Catalog update;
   both workflows share the `connector-catalog` concurrency group.
 
 ## Validation and deployment

@@ -23,6 +23,18 @@ const CORE_PROJECTS = {
 
 const CONNECTOR_REPO = 'Enkianssus/awoo-connectors';
 const CONNECTOR_IDS = new Set(['netease', 'kugou', 'qqmusic', 'folia']);
+const CONNECTOR_RUNTIMES = {
+  netease: 'win-x64',
+  kugou: 'win-x86',
+  qqmusic: 'win-x86',
+  folia: 'win-x86'
+};
+const CONNECTOR_VERSION_PATTERNS = {
+  netease: /^\d+\.\d+\.\d+\.\d+\.\d+$/,
+  kugou: /^\d+\.\d+\.\d+\.\d+$/,
+  qqmusic: /^\d+\.\d+\.\d+$/,
+  folia: /^\d+\.\d+\.\d+$/
+};
 const OFFICIAL_OVERLAY_REPO =
   'Enkianssus/AwooMusicBot-Overlay-Default';
 const OFFICIAL_OVERLAY_DESCRIPTOR = 'awoo-overlay.json';
@@ -229,6 +241,43 @@ export default {
           cacheControl: 'public, max-age=31536000, immutable'
         }
       );
+    }
+
+    if (url.pathname === '/connectors/v2/catalog.json') {
+      return proxyCatalogV2(request);
+    }
+
+    const connectorV2Download = url.pathname.match(
+      /^\/connectors\/v2\/download\/(netease|kugou|qqmusic|folia)\/([^/]+)\/([^/]+)$/
+    );
+    if (connectorV2Download) {
+      const [, connectorId, version, assetName] = connectorV2Download;
+      const runtime = CONNECTOR_RUNTIMES[connectorId];
+      const validVersion = CONNECTOR_VERSION_PATTERNS[connectorId].test(version);
+      const expectedAsset =
+        `awoo-connector-${connectorId}-${version}-${runtime}-framework-dependent.zip`;
+      if (!validVersion || assetName !== expectedAsset) {
+        return jsonResponse({ error: 'Invalid v2 connector asset.' }, 400);
+      }
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return jsonResponse({ error: 'Method not allowed.' }, 405);
+      }
+
+      return proxyGitHub(
+        request,
+        `https://github.com/${CONNECTOR_REPO}/releases/download/`
+          + `${connectorId}-v${version}/${assetName}`,
+        {
+          downloadName: assetName,
+          contentType: 'application/zip',
+          cacheControl: 'public, max-age=31536000, immutable',
+          cacheRevision: 'v2'
+        }
+      );
+    }
+
+    if (url.pathname.startsWith('/connectors/v2/')) {
+      return jsonResponse({ error: 'Invalid v2 connector path.' }, 404);
     }
 
     if (url.pathname === '/connectors/v1/catalog.json') {
@@ -901,6 +950,32 @@ async function proxyCatalog(request) {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'BiliNCM-Connector-Catalog/1.0'
+      },
+      cf: {
+        cacheEverything: true,
+        cacheTtl: 300
+      }
+    }
+  );
+
+  return copyProxyResponse(response, {
+    contentType: 'application/json; charset=utf-8',
+    cacheControl: 'public, max-age=300'
+  });
+}
+
+async function proxyCatalogV2(request) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return jsonResponse({ error: 'Method not allowed.' }, 405);
+  }
+
+  const response = await fetch(
+    `https://raw.githubusercontent.com/${CONNECTOR_REPO}/main/catalog-v2.json`,
+    {
+      method: request.method,
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'Awoo-Connector-Catalog/2.0'
       },
       cf: {
         cacheEverything: true,
