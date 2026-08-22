@@ -62,7 +62,7 @@ before a new InsertNext send so the current item does not change. Unknown or
 failed profiles retain the old guarded fallback and explicitly ask the user to
 update the KuGou connector.
 
-KuGou connector 20.0.81.6 also keeps current-track identity stable when the
+KuGou connector 20.1.41.1 also keeps current-track identity stable when the
 desktop ticker temporarily changes spacing, appends a localized title, or falls
 back to an older `KuGou.ini` value. Confirmed native IDs remain authoritative,
 while distinct native IDs and real title changes still advance normally.
@@ -117,21 +117,25 @@ The three desktop-player connectors use player-scoped versions whose final
 component is the connector revision:
 
 - NetEase `3.1.37.205354` -> connector `3.1.37.205354.9`
-- KuGou `20.0.81.27563` -> connector `20.0.81.6`
+- KuGou `20.1.41.27870` -> connector `20.1.41.1`
 - QQ Music `22.52` -> connector `22.52.1`
 
 KuGou deliberately omits its noisy final client build component:
 
 `KUGOU_MAJOR.KUGOU_MINOR.KUGOU_FEATURE.CONNECTOR_REVISION`
 
-For example, KuGou `20.0.81.27563` uses connector branch `20.0.81`, so its
-first connector release is `20.0.81.1` and this anchor-reset revision is
-`20.0.81.4`. The noisy final KuGou build component
-(`27563`) is recorded for diagnostics but does not create a new compatibility
-branch. Higher connector revisions on the same player branch update
-automatically; a player-version branch change is manual-only. The QQ connector
-can continue to carry signed compatibility profiles for older builds such as
-22.22 even when its release branch follows the newest tested build.
+For example, the previously validated KuGou `20.0.81.27563` uses connector
+branch `20.0.81`, so its first connector release is `20.0.81.1` and its
+validated anchor-reset revision is `20.0.81.4`. The native anchor-reset profile
+remains exact to that player build and `kugou.dll` hash. The tested KuGou
+`20.1.41.27870` is a new player branch, so this current-track identity fix is
+the first connector revision, `20.1.41.1`; that version does not imply a
+validated `20.1.41` native anchor-reset profile. The noisy final KuGou build
+component (`27870`) is recorded for diagnostics but does not create another
+compatibility branch. Higher connector revisions on the same player branch
+update automatically; a player-version branch change is manual-only. The QQ
+connector can continue to carry signed compatibility profiles for older builds
+such as 22.22 even when its release branch follows the newest tested build.
 
 Folia retains the independent three-part scheme because Stage API does not
 expose a desktop-player version:

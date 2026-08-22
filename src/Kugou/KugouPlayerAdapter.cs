@@ -64,7 +64,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
 
     public string DisplayName => "酷狗音乐";
 
-    public string TestedVersion => "20.0.81.27563";
+    public string TestedVersion => "20.1.41.27870";
 
     public PlayerCapabilities Capabilities { get; } = new(
         Search: true,

@@ -57,7 +57,7 @@ const supported = {
   kugou: {
     name: '酷狗音乐',
     playerVersionPolicy: '20.*',
-    testedPlayerVersion: '20.0.81.27563'
+    testedPlayerVersion: '20.1.41.27870'
   },
   qqmusic: {
     name: 'QQ音乐',
